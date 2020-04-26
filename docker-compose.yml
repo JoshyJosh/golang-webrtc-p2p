@@ -1,0 +1,9 @@
+version: "3.7"
+
+# not necessarily needed due to public services, but nice option to have
+services:
+    stuntman:
+        images: "rwgrim/stuntman-server:latest"
+        ports:
+            - "3478:3478/tcp"
+            - "3478:3478/udp"
