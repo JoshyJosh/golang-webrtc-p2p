@@ -36,6 +36,11 @@ pc.ontrack = function (event) {
   document.getElementById('remoteVideos').appendChild(el)
 }
 
+WS.onmessage = function(event) {
+  // @todo decode and add message to remote description
+  console.log("received message: " + event)
+}
+
 window.startSession = () => {
   let sd = document.getElementById('remoteSessionDescription').value
   if (sd === '') {

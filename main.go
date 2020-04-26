@@ -3,7 +3,9 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
 	"net/http"
+	"sync"
 	"text/template"
 
 	"github.com/google/uuid"
@@ -17,7 +19,12 @@ var upgrader = websocket.Upgrader{
 }
 
 // currently connected users' session descriptions
-var sessionDescriptions map[uuid.UUID]string
+type connectionsRegister struct {
+	sync.RWMutex
+	sessionDescriptions map[uuid.UUID]string
+}
+
+var connRegister = connectionsRegister{}
 
 // WSMsg is used for handling websocket json messages
 type WSMsg struct {
@@ -32,7 +39,7 @@ type WSConn struct {
 }
 
 func init() {
-	sessionDescriptions = make(map[uuid.UUID]string)
+	connRegister.sessionDescriptions = make(map[uuid.UUID]string)
 }
 
 func main() {
@@ -75,7 +82,7 @@ func serve(addr string) (err error) {
 			return
 		}
 
-		newWSConn := WSConn{
+		curWSConn := WSConn{
 			ID:   newUUID,
 			conn: conn,
 		}
@@ -86,7 +93,9 @@ func serve(addr string) (err error) {
 			if err != nil {
 				logrus.Error(err)
 				// remove connection from valid sessionDescriptions
-				delete(sessionDescriptions, newWSConn.ID)
+				connRegister.Lock()
+				delete(connRegister.sessionDescriptions, curWSConn.ID)
+				connRegister.Unlock()
 				return
 			}
 
@@ -107,7 +116,20 @@ func serve(addr string) (err error) {
 				return
 			}
 
-			sessionDescriptions[newWSConn.ID] = wsMsg.Data
+			connRegister.Lock()
+			_, ok := connRegister.sessionDescriptions[curWSConn.ID]
+			if !ok {
+				connRegister.sessionDescriptions[curWSConn.ID] = wsMsg.Data
+			}
+
+			if len(connRegister.sessionDescriptions) == 2 {
+				for id, sd := range connRegister.sessionDescriptions {
+					if id != curWSConn.ID {
+						curWSConn.conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{type: "SessionDesc", data: "%s"`, sd)))
+					}
+				}
+			}
+			connRegister.Unlock()
 		}
 	})
 
