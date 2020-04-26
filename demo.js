@@ -1,5 +1,7 @@
 /* eslint-env browser */
 
+const WS = new WebSocket('ws://' + window.location.host + '/websocket')
+
 let pc = new RTCPeerConnection({
   iceServers: [
     {
@@ -20,7 +22,9 @@ navigator.mediaDevices.getUserMedia({ video: true, audio: true })
 pc.oniceconnectionstatechange = e => log(pc.iceConnectionState)
 pc.onicecandidate = event => {
   if (event.candidate === null) {
-    document.getElementById('localSessionDescription').value = btoa(JSON.stringify(pc.localDescription))
+    sessionDesc = btoa(JSON.stringify(pc.localDescription))
+    document.getElementById('localSessionDescription').value = sessionDesc
+    WS.send(JSON.stringify({type:"SessionDesc", data:sessionDesc}))
   }
 }
 pc.ontrack = function (event) {
