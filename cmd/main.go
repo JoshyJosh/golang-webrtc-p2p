@@ -43,6 +43,8 @@ const callerSetStatus = "set"
 
 var callerStatus = callerUnsetStatus
 
+var callerReady chan bool
+
 // isValidIncomingType validates if incoming wsMsg.MsgType has been defined
 // and should be accepted
 func (w *wsMsg) isValidIncomingType() (isValid bool) {
@@ -73,6 +75,7 @@ var wsMessageTypes = [...]string{wsMsgInitCaller, wsMsgCallerSessionDesc, wsMsgR
 
 func init() {
 	connRegister.sessionDescriptions = make(map[uuid.UUID]connCreds)
+	callerReady = make(chan bool, 1)
 }
 
 func main() {
@@ -144,29 +147,8 @@ func serve(addr string) (err error) {
 			conn.WriteMessage(websocket.TextMessage, initCallerJSON)
 			callerStatus = callerInitStatus
 		} else if connRegisterLen >= 0 && callerStatus != callerUnsetStatus {
-			for callerStatus != callerSetStatus {
-				// wait for caller to get  status
-			}
 
-			logrus.Info("Found set caller status")
-			// set description for receiver
-			for id, sd := range connRegister.sessionDescriptions {
-
-				if id != curWSConn.ID && sd.isCaller {
-					logrus.Info("Found caller ID")
-					callerSessionMessage := wsMsg{
-						MsgType: wsMsgCallerSessionDesc,
-						Data:    sd.sessionDescription,
-					}
-
-					callerSessionJSON, err := json.Marshal(callerSessionMessage)
-					if err != nil {
-						logrus.Error(err)
-						return
-					}
-					conn.WriteMessage(websocket.TextMessage, callerSessionJSON)
-				}
-			}
+			go initCaller(&curWSConn)
 		}
 
 		for {
@@ -218,6 +200,7 @@ func serve(addr string) (err error) {
 				connRegister.sessionDescriptions[curWSConn.ID] = curConnCred
 
 				callerStatus = callerSetStatus
+				callerReady <- true
 			}
 
 			// if len(connRegister.sessionDescriptions) == 2 {
@@ -258,4 +241,30 @@ func serve(addr string) (err error) {
 	})
 
 	return http.ListenAndServe(addr, nil)
+}
+
+func initCaller(wsConn *WSConn) {
+	logrus.Info("Caller ready")
+
+	<-callerReady
+
+	logrus.Info("Sending caller info to reciever")
+
+	for id, sd := range connRegister.sessionDescriptions {
+
+		if id != wsConn.ID && sd.isCaller {
+			logrus.Info("Found caller ID")
+			callerSessionMessage := wsMsg{
+				MsgType: wsMsgCallerSessionDesc,
+				Data:    sd.sessionDescription,
+			}
+
+			callerSessionJSON, err := json.Marshal(callerSessionMessage)
+			if err != nil {
+				logrus.Error(err)
+				return
+			}
+			wsConn.conn.WriteMessage(websocket.TextMessage, callerSessionJSON)
+		}
+	}
 }

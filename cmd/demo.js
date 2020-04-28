@@ -56,7 +56,7 @@ WS.onmessage = function(event) {
       break
     case "CallerSessionDesc":
       document.getElementById('remoteSessionDescription').value = data.data
-      pc.setRemoteDescription(atob(data.data))
+      initReceiver()
       break
     case "ReceiverSessionDesc":
       // @todo set function to recieve remote session description and initialize call
@@ -66,7 +66,7 @@ WS.onmessage = function(event) {
   }
 }
 
-window.startSession = () => {
+window.initReceiver = () => {
   let sd = document.getElementById('remoteSessionDescription').value
   if (sd === '') {
     return alert('Session Description must not be empty')
