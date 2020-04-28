@@ -9,15 +9,17 @@ let pc = new RTCPeerConnection({
     }
   ]
 })
+
 var log = msg => {
   document.getElementById('logs').innerHTML += msg + '<br>'
 }
 
-navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-  .then(stream => {
-    stream.getTracks().forEach(track => pc.addTrack(track, stream));
-    pc.createOffer().then(d => pc.setLocalDescription(d)).catch(log)
-  }).catch(log)
+// @todo synchronize who is caller and who is callee
+// navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+//   .then(stream => {
+//     stream.getTracks().forEach(track => pc.addTrack(track, stream));
+//     pc.createOffer().then(d => pc.setLocalDescription(d)).catch(log)
+//   }).catch(log)
 
 pc.oniceconnectionstatechange = e => log(pc.iceConnectionState)
 pc.onicecandidate = event => {
@@ -27,6 +29,15 @@ pc.onicecandidate = event => {
     WS.send(JSON.stringify({type:"SessionDesc", data:sessionDesc}))
   }
 }
+
+window.initCaller = () => {
+  navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+  .then(stream => {
+    stream.getTracks().forEach(track => pc.addTrack(track, stream));
+    pc.createOffer().then(d => pc.setLocalDescription(d)).catch(log)
+  }).catch(log)
+}
+
 pc.ontrack = function (event) {
   var el = document.createElement(event.track.kind)
   el.srcObject = event.streams[0]
@@ -38,7 +49,21 @@ pc.ontrack = function (event) {
 
 WS.onmessage = function(event) {
   // @todo decode and add message to remote description
-  console.log("received message: " + event)
+  data = JSON.parse(event.data)
+  switch (data.type) {
+    case "InitCaller":
+      initCaller()
+      break
+    case "CallerSessionDesc":
+      document.getElementById('remoteSessionDescription').value = data.data
+      pc.setRemoteDescription(atob(data.data))
+      break
+    case "ReceiverSessionDesc":
+      // @todo set function to recieve remote session description and initialize call
+      break
+    default:
+      alert("invalid session description type: ", data.type)
+  }
 }
 
 window.startSession = () => {
@@ -49,6 +74,23 @@ window.startSession = () => {
 
   try {
     pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(atob(sd))))
+    .then(function(){
+      return navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+    })
+    .then(function(stream) {
+      localStream = stream
+
+      document.getElementById("localVideos").srcObject = localStream
+      localStream.getTracks().forEach(track => pc.addTrack(track, localStream))
+    })
+    .then(function() {
+      return pc.createAnswer()
+    })
+    .then(function(answer){
+      return pc.setLocalDescription(answer)
+    })
+
+    WS.send(JSON.stringify({type:"SessionDesc", data:JSON.stringify(pc.localDescription)}))
   } catch (e) {
     alert(e)
   }

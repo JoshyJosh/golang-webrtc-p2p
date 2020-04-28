@@ -2,7 +2,7 @@
 	<head>
 		<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
 		<link href="https://fonts.googleapis.com/css?family=Quicksand:400,500,700" rel="stylesheet">
-		<title>{{ .Title }} | Pion - testexample</title>
+		<title>{{ .Title }}</title>
 		<style>
 			body {
 				font-family: "Quicksand", sans-serif;
@@ -25,8 +25,10 @@
 			<button onclick="window.startSession()"> Start Session </button><br />
 			
 			<br />
+			Local Video<br />
+			<video id="localVideos"></video> <br />
 			
-			Video<br />
+			RemoteVideo<br />
 			<div id="remoteVideos"></div> <br />
 			
 			Logs<br />
