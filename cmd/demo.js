@@ -26,7 +26,7 @@ pc.onicecandidate = event => {
   if (event.candidate === null) {
     sessionDesc = btoa(JSON.stringify(pc.localDescription))
     document.getElementById('localSessionDescription').value = sessionDesc
-    WS.send(JSON.stringify({type:"SessionDesc", data:sessionDesc}))
+    WS.send(JSON.stringify({type:"CallerSessionDesc", data:sessionDesc}))
   }
 }
 
@@ -77,7 +77,7 @@ window.initReceiver = () => {
     .then(function(){
       return navigator.mediaDevices.getUserMedia({ video: true, audio: true })
     })
-    .then(function(stream) {
+    .then(function(stream){
       localStream = stream
 
       document.getElementById("localVideos").srcObject = localStream
@@ -89,8 +89,9 @@ window.initReceiver = () => {
     .then(function(answer){
       return pc.setLocalDescription(answer)
     })
-
-    WS.send(JSON.stringify({type:"SessionDesc", data:JSON.stringify(pc.localDescription)}))
+    .catch(log)
+    sessionDesc = btoa(JSON.stringify(pc.localDescription))
+    WS.send(JSON.stringify({type:"ReceiverSessionDesc", data: sessionDesc}))
   } catch (e) {
     alert(e)
   }

@@ -45,6 +45,13 @@ var callerStatus = callerUnsetStatus
 
 var callerReady chan bool
 
+// valid websocket message types
+const wsMsgInitCaller = "InitCaller"
+const wsMsgCallerSessionDesc = "CallerSessionDesc"
+const wsMsgReceiverSessionDesc = "ReceiverSessionDesc"
+
+var wsMessageTypes = [...]string{wsMsgInitCaller, wsMsgCallerSessionDesc, wsMsgReceiverSessionDesc}
+
 // isValidIncomingType validates if incoming wsMsg.MsgType has been defined
 // and should be accepted
 func (w *wsMsg) isValidIncomingType() (isValid bool) {
@@ -53,7 +60,7 @@ func (w *wsMsg) isValidIncomingType() (isValid bool) {
 		if w.MsgType == "InitCaller" {
 			return false
 		} else if w.MsgType == msgType {
-			isValid = true
+			return true
 		}
 	}
 
@@ -65,13 +72,6 @@ type WSConn struct {
 	ID   uuid.UUID
 	conn *websocket.Conn
 }
-
-// valid websocket message types
-const wsMsgInitCaller = "InitCaller"
-const wsMsgCallerSessionDesc = "CallerSessionDesc"
-const wsMsgReceiverSessionDesc = "ReceiverSessionDesc"
-
-var wsMessageTypes = [...]string{wsMsgInitCaller, wsMsgCallerSessionDesc, wsMsgReceiverSessionDesc}
 
 func init() {
 	connRegister.sessionDescriptions = make(map[uuid.UUID]connCreds)
@@ -171,15 +171,15 @@ func serve(addr string) (err error) {
 				return
 			}
 
-			var initWSMessage wsMsg
+			var clientWSMessage wsMsg
 
-			if err := json.Unmarshal(msg, &initWSMessage); err != nil {
+			if err := json.Unmarshal(msg, &clientWSMessage); err != nil {
 				logrus.Error(err)
 				return
 			}
 
-			if initWSMessage.isValidIncomingType() {
-				logrus.Error("Undefined websocketMessageType: ", initWSMessage.MsgType)
+			if !clientWSMessage.isValidIncomingType() {
+				logrus.Error("Undefined websocketMessageType: ", clientWSMessage.MsgType)
 				return
 			}
 
@@ -187,7 +187,7 @@ func serve(addr string) (err error) {
 			_, ok := connRegister.sessionDescriptions[curWSConn.ID]
 			if !ok {
 				curConnCred := connCreds{
-					sessionDescription: initWSMessage.Data,
+					sessionDescription: clientWSMessage.Data,
 					conn:               curWSConn.conn,
 				}
 
@@ -199,43 +199,32 @@ func serve(addr string) (err error) {
 				logrus.Info("Adding new sessionDescription, current count: ", len(connRegister.sessionDescriptions))
 				connRegister.sessionDescriptions[curWSConn.ID] = curConnCred
 
-				callerStatus = callerSetStatus
-				callerReady <- true
+				if curConnCred.isCaller {
+					callerStatus = callerSetStatus
+					callerReady <- true
+				}
 			}
 
-			// if len(connRegister.sessionDescriptions) == 2 {
-			// 	logrus.Info("In if statement")
-			// 	for id, sd := range connRegister.sessionDescriptions {
+			if clientWSMessage.MsgType == wsMsgReceiverSessionDesc {
+				for _, sd := range connRegister.sessionDescriptions {
+					if sd.isCaller {
+						// send session description to caller
+						receiverSessionMessage := wsMsg{
+							MsgType: wsMsgReceiverSessionDesc,
+							Data:    clientWSMessage.Data,
+						}
 
-			// 		if id != curWSConn.ID && sd.isCaller {
-			// 			logrus.Info("Found caller ID")
-			// 			remoteSessionMessage := wsMsg{
-			// 				MsgType: wsMsgCallerSessionDesc,
-			// 				Data:    sd.sessionDescription,
-			// 			}
+						receiverSessionJSON, err := json.Marshal(receiverSessionMessage)
+						if err != nil {
+							logrus.Error(err)
+							return
+						}
 
-			// 			remoteSessionJSON, err := json.Marshal(remoteSessionMessage)
-			// 			if err != nil {
-			// 				logrus.Error(err)
-			// 				return
-			// 			}
-			// 			sd.conn.WriteMessage(websocket.TextMessage, remoteSessionJSON)
-			// 		} else {
-			// 			logrus.Info("Found receiver ID")
-			// 			// remoteSessionMessage := wsMsg{
-			// 			// 	MsgType: "SessionDesc",
-			// 			// 	Data:    wsMsg.Data,
-			// 			// }
+						curWSConn.conn.WriteMessage(websocket.TextMessage, receiverSessionJSON)
+					}
+				}
+			}
 
-			// 			// remoteSessionData, err := json.Marshal(remoteSessionMessage)
-			// 			// if err != nil {
-			// 			// 	logrus.Error(err)
-			// 			// 	return
-			// 			// }
-			// 			// sd.conn.WriteMessage(websocket.TextMessage, remoteSessionData)
-			// 		}
-			// 	}
-			// }
 			connRegister.Unlock()
 		}
 	})
