@@ -26,7 +26,7 @@ type connectionsRegister struct {
 type connCreds struct {
 	conn               *websocket.Conn
 	sessionDescription string
-	isCaller           bool
+	isCaller           bool // for debugging @todo check if needed
 }
 
 var connRegister = connectionsRegister{}
@@ -45,12 +45,20 @@ var callerStatus = callerUnsetStatus
 
 var callerReady chan bool
 
+type wsIceCandidates struct {
+	sync.RWMutex
+	messages [][]byte
+}
+
+var iceCandidates wsIceCandidates
+
 // valid websocket message types
 const wsMsgInitCaller = "InitCaller"
 const wsMsgCallerSessionDesc = "CallerSessionDesc"
 const wsMsgReceiverSessionDesc = "ReceiverSessionDesc"
+const wsMsgICECandidate = "ICECandidate"
 
-var wsMessageTypes = [...]string{wsMsgInitCaller, wsMsgCallerSessionDesc, wsMsgReceiverSessionDesc}
+var wsMessageTypes = [...]string{wsMsgInitCaller, wsMsgCallerSessionDesc, wsMsgReceiverSessionDesc, wsMsgICECandidate}
 
 // isValidIncomingType validates if incoming wsMsg.MsgType has been defined
 // and should be accepted
@@ -69,8 +77,9 @@ func (w *wsMsg) isValidIncomingType() (isValid bool) {
 
 // WSConn is used to serialize WSConn, and help storing sessionDescriptions
 type WSConn struct {
-	ID   uuid.UUID
-	conn *websocket.Conn
+	ID       uuid.UUID
+	conn     *websocket.Conn
+	isCaller bool
 }
 
 func init() {
@@ -148,7 +157,7 @@ func serve(addr string) (err error) {
 			callerStatus = callerInitStatus
 		} else if connRegisterLen >= 0 && callerStatus != callerUnsetStatus {
 
-			go initCaller(&curWSConn)
+			go initReceiver(&curWSConn)
 		}
 
 		for {
@@ -200,14 +209,19 @@ func serve(addr string) (err error) {
 				connRegister.sessionDescriptions[curWSConn.ID] = curConnCred
 
 				if curConnCred.isCaller {
+					curWSConn.isCaller = true
 					callerStatus = callerSetStatus
 					callerReady <- true
 				}
 			}
 
+			logrus.Info("Receiving message type: ", clientWSMessage.MsgType, clientWSMessage.Data)
+			logrus.Info(len(connRegister.sessionDescriptions))
+
 			if clientWSMessage.MsgType == wsMsgReceiverSessionDesc {
 				for _, sd := range connRegister.sessionDescriptions {
 					if sd.isCaller {
+						logrus.Info("Sending session description to caller")
 						// send session description to caller
 						receiverSessionMessage := wsMsg{
 							MsgType: wsMsgReceiverSessionDesc,
@@ -223,6 +237,12 @@ func serve(addr string) (err error) {
 						curWSConn.conn.WriteMessage(websocket.TextMessage, receiverSessionJSON)
 					}
 				}
+			} else if clientWSMessage.MsgType == wsMsgICECandidate {
+				logrus.Info("Is caller:", curWSConn.isCaller)
+
+				iceCandidates.Lock()
+				iceCandidates.messages = append(iceCandidates.messages, msg)
+				iceCandidates.Unlock()
 			}
 
 			connRegister.Unlock()
@@ -232,7 +252,7 @@ func serve(addr string) (err error) {
 	return http.ListenAndServe(addr, nil)
 }
 
-func initCaller(wsConn *WSConn) {
+func initReceiver(wsConn *WSConn) {
 	logrus.Info("Caller ready")
 
 	<-callerReady
@@ -255,5 +275,15 @@ func initCaller(wsConn *WSConn) {
 			}
 			wsConn.conn.WriteMessage(websocket.TextMessage, callerSessionJSON)
 		}
+	}
+
+	for {
+		iceCandidates.Lock()
+		if len(iceCandidates.messages) > 0 {
+			logrus.Info("Sending ICE candidate")
+			wsConn.conn.WriteMessage(websocket.TextMessage, iceCandidates.messages[0])
+			iceCandidates.messages = iceCandidates.messages[1:]
+		}
+		iceCandidates.Unlock()
 	}
 }
