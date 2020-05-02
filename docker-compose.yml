@@ -2,8 +2,17 @@ version: "3.7"
 
 # not necessarily needed due to public services, but nice option to have
 services:
+
     stuntman:
-        images: "rwgrim/stuntman-server:latest"
+        image: "rwgrim/stuntman-server:latest"
         ports:
             - "3478:3478/tcp"
             - "3478:3478/udp"
+
+    selenium-firefox:
+        image: "selenium/standalone-firefox"
+        ports:
+            - "4444:4444"
+        volumes:
+            - /dev/shm:/dev/shm
+    #@todo add nodejs tester
