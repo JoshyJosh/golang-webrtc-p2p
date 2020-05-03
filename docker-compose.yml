@@ -3,11 +3,11 @@ version: "3.7"
 # not necessarily needed due to public services, but nice option to have
 services:
 
-    stuntman:
-        image: "rwgrim/stuntman-server:latest"
-        ports:
-            - "3478:3478/tcp"
-            - "3478:3478/udp"
+    # stuntman:
+    #     image: "rwgrim/stuntman-server:latest"
+    #     ports:
+    #         - "3478:3478/tcp"
+    #         - "3478:3478/udp"
 
     selenium-firefox:
         image: "selenium/standalone-firefox"
@@ -20,4 +20,3 @@ services:
         build: "server/."
         ports:
             - "3000:3000"
-            

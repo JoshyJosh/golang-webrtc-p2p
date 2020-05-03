@@ -100,6 +100,7 @@ func main() {
 
 func serve(addr string) (err error) {
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		logrus.Info("Got accessed")
 		if r.URL.Path == "/" {
 			temp := template.Must(template.ParseFiles("template.html"))
 			data := struct{ Title string }{Title: "Client to client call"}

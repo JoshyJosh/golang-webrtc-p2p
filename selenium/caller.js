@@ -1,6 +1,6 @@
 const { buildDriver } = require('./webdriver')
 
-let driver = buildDriver('firefox')
+let driver = buildDriver('firefox', undefined, false)
 
 console.log(driver)
 

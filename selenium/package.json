@@ -5,7 +5,7 @@
   "main": "caller.js",
   "dependencies": {
     "package-lock.json": "^1.0.0",
-    "selenium-webdriver": "^4.0.0-alpha.7"
+    "selenium-webdriver": "^3.6.0"
   },
   "devDependencies": {},
   "scripts": {
