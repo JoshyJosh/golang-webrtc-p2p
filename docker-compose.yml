@@ -15,4 +15,9 @@ services:
             - "4444:4444"
         volumes:
             - /dev/shm:/dev/shm
-    #@todo add nodejs tester
+
+    server:
+        build: "server/."
+        ports:
+            - "3000:3000"
+            

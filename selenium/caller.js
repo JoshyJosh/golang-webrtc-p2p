@@ -6,9 +6,9 @@ console.log(driver)
 
 async function getWebRTCPage() {
     try {
-        // await driver.get('http://127.0.0.1:3000/')
+        await driver.get('http://127.0.0.1:3000/')
         // sanity check
-        await driver.get('https://www.reddit.com')
+        // await driver.get('https://www.reddit.com')
 
         title = await driver.getTitle()
         console.log(title)
