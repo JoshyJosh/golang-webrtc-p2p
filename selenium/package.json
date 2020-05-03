@@ -1,0 +1,16 @@
+{
+  "name": "webrtc-selenium",
+  "version": "1.0.0",
+  "description": "e2e testing engine for webRTC project in Go",
+  "main": "caller.js",
+  "dependencies": {
+    "package-lock.json": "^1.0.0",
+    "selenium-webdriver": "^4.0.0-alpha.7"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "test": "node caller.js"
+  },
+  "author": "",
+  "license": "ISC"
+}
