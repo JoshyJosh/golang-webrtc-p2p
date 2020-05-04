@@ -1,24 +1,28 @@
 const { buildDriver } = require('./webdriver')
 
-let driver = buildDriver('firefox', undefined, false)
+let driverCaller = buildDriver('firefox', undefined, false)
+let driverReceiver = buildDriver('firefox', undefined, false)
 
-console.log(driver)
+console.log(driverCaller)
+console.log(driverReceiver)
 
 async function getWebRTCPage() {
     try {
-        await driver.get('http://127.0.0.1:3000/')
+        await driverCaller.get('http://127.0.0.1:3000/')
+        await driverReceiver.get('http://127.0.0.1:3000/')
         // sanity check
         // await driver.get('https://www.reddit.com')
 
-        title = await driver.getTitle()
+        title = await driverCaller.getTitle()
         console.log(title)
         
-        source = await driver.getPageSource()
+        source = await driverCaller.getPageSource()
         console.log(source)
     } catch(err) {
         console.log(err)
     } finally {
-        driver.quit()
+        driverCaller.quit()
+        driverReceiver.quit()
     }
 }
 
