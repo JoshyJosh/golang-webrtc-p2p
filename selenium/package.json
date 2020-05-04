@@ -7,7 +7,9 @@
     "package-lock.json": "^1.0.0",
     "selenium-webdriver": "^3.6.0"
   },
-  "devDependencies": {},
+  "devDependencies": {
+    "tape": "^5.0.0"
+  },
   "scripts": {
     "test": "node caller.js"
   },
