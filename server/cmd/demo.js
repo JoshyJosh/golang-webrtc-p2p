@@ -1,8 +1,10 @@
 /* eslint-env browser */
+(function() {
 
 const WS = new WebSocket('ws://' + window.location.host + '/websocket')
+window.WS = WS
 
-let pc = new RTCPeerConnection({
+window.pc = new RTCPeerConnection({
   iceServers: [
     {
       urls: 'stun:stun.l.google.com:19302'
@@ -94,6 +96,7 @@ window.initReceiver = () => {
   let sd = document.getElementById('remoteSessionDescription').value
   if (sd === '') {
     return alert('Session Description must not be empty')
+
   }
 
   pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(atob(sd))))
@@ -116,3 +119,5 @@ window.initReceiver = () => {
   })
   .catch(log)
 }
+})()
+

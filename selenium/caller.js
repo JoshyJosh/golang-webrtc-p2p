@@ -18,6 +18,13 @@ async function getWebRTCPage() {
         
         source = await driverCaller.getPageSource()
         console.log(source)
+
+        driverCaller.sleep(2000)
+
+        await driverCaller.executeScript("return pc")
+                          .then(function(pcVar){
+                              console.log(pcVar)
+                          })
     } catch(err) {
         console.log(err)
     } finally {
