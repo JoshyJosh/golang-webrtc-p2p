@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
 	"net/http"
 	"sync"
 	"text/template"
@@ -45,12 +46,17 @@ var callerStatus = callerUnsetStatus
 
 var callerReady chan bool
 
+// @todo rename to keep it semantic
+// fore receivers SDP
+var receiverReady chan bool
+
 type wsIceCandidates struct {
 	sync.RWMutex
 	messages [][]byte
 }
 
-var iceCandidates wsIceCandidates
+var iceCandidatesCaller wsIceCandidates
+var iceCandidatesReceiver wsIceCandidates
 
 // valid websocket message types
 const wsMsgInitCaller = "InitCaller"
@@ -212,6 +218,7 @@ func serve(addr string) (err error) {
 				if curConnCred.isCaller {
 					curWSConn.isCaller = true
 					callerStatus = callerSetStatus
+					go receiverICEBuffer(curWSConn.conn)
 					callerReady <- true
 				}
 			}
@@ -235,15 +242,23 @@ func serve(addr string) (err error) {
 							return
 						}
 
-						curWSConn.conn.WriteMessage(websocket.TextMessage, receiverSessionJSON)
+						sd.conn.WriteMessage(websocket.TextMessage, receiverSessionJSON)
+
+						receiverReady <- true
 					}
 				}
 			} else if clientWSMessage.MsgType == wsMsgICECandidate {
-				logrus.Info("Is caller:", curWSConn.isCaller)
-
-				iceCandidates.Lock()
-				iceCandidates.messages = append(iceCandidates.messages, msg)
-				iceCandidates.Unlock()
+				// @todo possible refactoring
+				logrus.Info("Is caller ICE candidate: ", curWSConn.isCaller)
+				if curWSConn.isCaller {
+					iceCandidatesCaller.Lock()
+					iceCandidatesCaller.messages = append(iceCandidatesCaller.messages, msg)
+					iceCandidatesCaller.Unlock()
+				} else {
+					iceCandidatesReceiver.Lock()
+					iceCandidatesReceiver.messages = append(iceCandidatesReceiver.messages, msg)
+					iceCandidatesReceiver.Unlock()
+				}
 			}
 
 			connRegister.Unlock()
@@ -254,7 +269,7 @@ func serve(addr string) (err error) {
 }
 
 func initReceiver(wsConn *WSConn) {
-	logrus.Info("Caller ready")
+	logrus.Info("initReceiver ready")
 
 	<-callerReady
 
@@ -279,12 +294,33 @@ func initReceiver(wsConn *WSConn) {
 	}
 
 	for {
-		iceCandidates.Lock()
-		if len(iceCandidates.messages) > 0 {
+		iceCandidatesCaller.Lock()
+		if len(iceCandidatesCaller.messages) > 0 {
 			logrus.Info("Sending ICE candidate")
-			wsConn.conn.WriteMessage(websocket.TextMessage, iceCandidates.messages[0])
-			iceCandidates.messages = iceCandidates.messages[1:]
+			fmt.Println(string(iceCandidatesCaller.messages[0]))
+			wsConn.conn.WriteMessage(websocket.TextMessage, iceCandidatesCaller.messages[0])
+			iceCandidatesCaller.messages = iceCandidatesCaller.messages[1:]
 		}
-		iceCandidates.Unlock()
+		iceCandidatesCaller.Unlock()
+	}
+}
+
+// @todo refactor (duplicated with iceCandidatesCaller)
+func receiverICEBuffer(wsConn *websocket.Conn) {
+	logrus.Info("receiveICEBuffer ready")
+
+	<-receiverReady
+
+	logrus.Info("received receiver Session description")
+
+	for {
+		iceCandidatesReceiver.Lock()
+		if len(iceCandidatesReceiver.messages) > 0 {
+			logrus.Info("Sending ICE candidate")
+			fmt.Println(string(iceCandidatesReceiver.messages[0]))
+			wsConn.WriteMessage(websocket.TextMessage, iceCandidatesReceiver.messages[0])
+			iceCandidatesReceiver.messages = iceCandidatesReceiver.messages[1:]
+		}
+		iceCandidatesReceiver.Unlock()
 	}
 }

@@ -16,19 +16,13 @@ var log = msg => {
   document.getElementById('logs').innerHTML += msg + '<br>'
 }
 
-// @todo synchronize who is caller and who is callee
-// navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-//   .then(stream => {
-//     stream.getTracks().forEach(track => pc.addTrack(track, stream));
-//     pc.createOffer().then(d => pc.setLocalDescription(d)).catch(log)
-//   }).catch(log)
-
 pc.oniceconnectionstatechange = e => log(pc.iceConnectionState)
+
 pc.onicecandidate = event => {
   console.log("in onicecandidate")
   if (event.candidate) {
     console.log(event.candidate)
-    WS.send(JSON.stringify({type:"ICECandidate", data:JSON.stringify(btoa(event.candidate))}))
+    WS.send(JSON.stringify({type:"ICECandidate", data:btoa(JSON.stringify(event.candidate))}))
   }
 }
 
@@ -44,26 +38,29 @@ pc.onnegotiationneeded = () => {
 }
 
 window.initCaller = () => {
+  console.log("in init caller")
   navigator.mediaDevices.getUserMedia({ video: true, audio: true })
   .then(stream => {
     stream.getTracks().forEach(track => pc.addTrack(track, stream))
     document.getElementById("localVideos").srcObject = stream
+    document.getElementById("localVideos").autoplay = true
   }).catch(log)
 }
 
 window.incomingICEcandidate = (msg) => {
-  var candidate = new RTCIceCandidate(msg.candidate)
+  var candidate = new RTCIceCandidate(msg)
 
   pc.addIceCandidate(candidate).catch(log)
 }
 
 pc.ontrack = function (event) {
-  var el = document.createElement(event.track.kind)
-  el.srcObject = event.streams[0]
-  el.autoplay = true
-  el.controls = true
-
-  document.getElementById('remoteVideos').appendChild(el)
+  console.log("in ontrack event")
+  if (document.getElementById('remoteVideos').srcObject) {
+    document.getElementById('remoteVideos').srcObject.addTrack(event.track)
+    return
+  }
+  document.getElementById('remoteVideos').srcObject = event.streams[0]
+  document.getElementById('remoteVideos').autoplay = true
 }
 
 WS.onmessage = function(event) {
@@ -73,18 +70,20 @@ WS.onmessage = function(event) {
   switch (data.type) {
     case "InitCaller":
       initCaller()
-      break
+      break 
     case "CallerSessionDesc":
       document.getElementById('remoteSessionDescription').value = data.data
       initReceiver()
       break
     case "ReceiverSessionDesc":
       console.log("received ReceiverSessionDesc")
+      remoteSDP = JSON.parse(atob(data.data))
+      pc.setRemoteDescription(remoteSDP)
       // @todo set function to recieve remote session description and initialize call
       break
     case "ICECandidate":
       console.log("Getting ice candidate")
-      var candidateMessage = JSON.parse(btoa(data))
+      var candidateMessage = JSON.parse(atob(data.data))
       incomingICEcandidate(candidateMessage)
       break
     default:
@@ -96,7 +95,6 @@ window.initReceiver = () => {
   let sd = document.getElementById('remoteSessionDescription').value
   if (sd === '') {
     return alert('Session Description must not be empty')
-
   }
 
   pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(atob(sd))))
@@ -105,7 +103,8 @@ window.initReceiver = () => {
   })
   .then(function(stream){
     document.getElementById("localVideos").srcObject = stream
-    localStream.getTracks().forEach(track => pc.addTrack(track, stream))
+    document.getElementById("localVideos").autoplay = true
+    stream.getTracks().forEach(track => pc.addTrack(track, stream))
   })
   .then(function() {
     return pc.createAnswer()
