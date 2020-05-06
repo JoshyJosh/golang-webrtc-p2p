@@ -5,8 +5,6 @@ async function getWebRTCConnection(t, caller, receiver) {
     try {
         await caller.get('http://127.0.0.1:3000/')
         await receiver.get('http://127.0.0.1:3000/')
-        // sanity check
-        // await driver.get('https://www.reddit.com')
 
         title = await caller.getTitle()
         console.log(title)
@@ -17,12 +15,7 @@ async function getWebRTCConnection(t, caller, receiver) {
         await CheckStablePeerConnections(t, caller, receiver)
     } catch (err) {
         console.log(err)
-    }
-
-    // @todo this should be at the end of the test case
-    caller.quit()
-    receiver.quit()
-    t.end()
+    }   
 }
 
 async function ReconnectPeer(t, peer) {
@@ -58,13 +51,18 @@ test("Firefox-SuccessfulConnection", t => {
     var driverReceiver = buildDriver('firefox', undefined, false)
 
     try {
-        getWebRTCConnection(t, driverCaller, driverReceiver)
+        (async function(t, driverCaller, driverReceiver) {
+            await getWebRTCConnection(t, driverCaller, driverReceiver)
+            driverCaller.quit()
+            driverReceiver.quit()
+            t.end()
+        })(t, driverCaller, driverReceiver)
     } catch(err) {
         console.log(err)
-    } finally {
-        // driverCaller.quit()
-        // driverReceiver.quit()
-    }    
+        driverCaller.quit()
+        driverReceiver.quit()
+        t.end()
+    }   
 })
 
 // test("Firefox-CallerReconnect", t => {
