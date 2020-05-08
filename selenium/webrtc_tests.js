@@ -36,51 +36,27 @@ async function CheckStablePeerConnections(t, caller, receiver, additionalComment
     }
 
     try {
-        // wait for peer connection to get established
-        await caller.executeScript(`
-            let checkLocalDescription = setInterval(() => {
-                if (window.pc.currentRemoteDescription) {
-                    // do something
-                    if (window.pc.currentRemoteDescription.type === "offer") {
-                        clearInterval(checkLocalDescription);
-                    }
-                }
-            },500);
-            
-            setTimeout(() => { clearInterval(checkLocalDescription)}, 5000)
-        `)
-        await caller.executeScript("return pc") 
-                    .then(function(pc){
-                        t.ok(pc.signalingState === "stable", "assert that Caller has established webRTC connection" + additionalComment)
-                        return pc
-                    })
-                    .then(function(pc){
-                        t.ok(pc.currentLocalDescription !== null, "assert that Caller PeerConnection has non-null currentLocalDescription" + additionalComment)
-                        t.equal(pc.currentLocalDescription.type, "offer", "assert that Caller PeerConnection has currentLocalDescription of type offer" + additionalComment)
-                    })
-                    .then(function(pc){
-                        t.ok(pc.currentRemoteDescription !== null, "assert that Caller PeerConnection has non-null currentRemoteDescription" + additionalComment)
-                        t.equal(pc.currentRemoteDescription.type, "answer", "assert that Caller PeerConnection has currentRemoteDescription of type answer" + additionalComment)
-                    })
-                    .catch(err => {
-                        throw err
-                    })
+        // @todo double check wait for peer connection to get established
+
+        callerPc = await caller.executeScript("return pc") 
+
+        await t.ok(callerPc.signalingState === "stable", "assert that Caller has established webRTC connection" + additionalComment)
+
+        await t.ok(callerPc.currentLocalDescription !== null, "assert that Caller PeerConnection has non-null currentLocalDescription" + additionalComment)
+        await t.equal(callerPc.currentLocalDescription.type, "offer", "assert that Caller PeerConnection has currentLocalDescription of type offer" + additionalComment)
     
-        await receiver.executeScript("return pc")
-                      .then(function(pc){
-                          t.ok(pc.signalingState === "stable", "assert that Receiver has established webRTC connection" + additionalComment)
-                      })
-                      .then(function(pc){
-                          t.ok(pc.currentLocalDescription !== null, "assert that Receiver PeerConnection has non-null currentLocalDescription" + additionalComment)
-                          t.equal(pc.currentLocalDescription.type, "answer", "assert that Receiver PeerConnection has currentLocalDescription of type answer" + additionalComment)
-                      })
-                      .then(function(pc){
-                          t.ok(pc.currentRemoteDescription !== null, "assert that Receiver PeerConnection has non-null currentRemoteDescription" + additionalComment)
-                          t.equal(pc.currentRemoteDescription.type, "offer", "assert that Receiver PeerConnection has currentRemoteDescription of type offer" + additionalComment)
-                      })
-                      .catch(err => {
-                          throw err
-                      })
+        await t.ok(callerPc.currentRemoteDescription !== null, "assert that Caller PeerConnection has non-null currentRemoteDescription" + additionalComment)
+        await t.equal(callerPc.currentRemoteDescription.type, "answer", "assert that Caller PeerConnection has currentRemoteDescription of type answer" + additionalComment)
+    
+        receiverPc = await receiver.executeScript("return pc")
+    
+        await t.ok(pc.signalingState === "stable", "assert that Receiver has established webRTC connection" + additionalComment)
+    
+        await t.ok(pc.currentLocalDescription !== null, "assert that Receiver PeerConnection has non-null currentLocalDescription" + additionalComment)
+        await t.equal(pc.currentLocalDescription.type, "answer", "assert that Receiver PeerConnection has currentLocalDescription of type answer" + additionalComment)
+    
+        await t.ok(pc.currentRemoteDescription !== null, "assert that Receiver PeerConnection has non-null currentRemoteDescription" + additionalComment)
+        await t.equal(pc.currentRemoteDescription.type, "offer", "assert that Receiver PeerConnection has currentRemoteDescription of type offer" + additionalComment)
     } catch(err) {
         throw err
     }
