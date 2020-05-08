@@ -1,6 +1,6 @@
 FROM golang:latest
 
-COPY cmd /app
+COPY . /app
 
 WORKDIR /app
 
@@ -12,4 +12,4 @@ RUN go get -v -d ./...
 
 # RUN go install -v ./...
 
-CMD ls && go run main.go --address=:3000
+CMD ls && go run cmd/main.go --address=:3000
