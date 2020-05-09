@@ -66,6 +66,7 @@ const wsMsgICECandidate = "ICECandidate"
 var wsMessageTypes = [...]string{wsMsgInitCaller, wsMsgCallerSessionDesc, wsMsgReceiverSessionDesc, wsMsgICECandidate}
 
 var wsCount int
+var maxConn = 2
 
 // isValidIncomingType validates if incoming wsMsg.MsgType has been defined
 // and should be accepted
@@ -110,7 +111,12 @@ func StartServer(addr string) (err error) {
 		}
 	})
 	http.HandleFunc("/websocket", func(w http.ResponseWriter, req *http.Request) {
-
+		if wsCount >= maxConn {
+			logrus.Warnf("Maximum connections reached: %d", maxConn)
+			// return locked status for too many connections
+			w.WriteHeader(http.StatusLocked)
+			return
+		}
 		conn, err := upgrader.Upgrade(w, req, nil)
 		if err != nil {
 			logrus.Error(err)

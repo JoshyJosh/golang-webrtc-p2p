@@ -2,6 +2,7 @@ package videocaller
 
 import (
 	"encoding/json"
+	"net/http"
 	"testing"
 	"time"
 
@@ -24,10 +25,15 @@ func TestMaximumConnections(t *testing.T) {
 		return
 	}
 
-	ws1, _, err := websocket.DefaultDialer.Dial("ws://localhost:3000/websocket", nil)
+	// first connection
+	ws1, resp, err := websocket.DefaultDialer.Dial("ws://localhost:3000/websocket", nil)
 	if err != nil {
 		t.Error(err)
 		return
+	}
+
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Errorf("unexpected first response status: %d; expected: %d", resp.StatusCode, http.StatusSwitchingProtocols)
 	}
 
 	time.Sleep(1 * time.Second)
@@ -59,10 +65,15 @@ func TestMaximumConnections(t *testing.T) {
 		return
 	}
 
-	_, _, err = websocket.DefaultDialer.Dial("ws://localhost:3000/websocket", nil)
+	// second connection
+	_, resp, err = websocket.DefaultDialer.Dial("ws://localhost:3000/websocket", nil)
 	if err != nil {
 		t.Error(err)
 		return
+	}
+
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Errorf("unexpected second response status: %d; expected %d", resp.StatusCode, http.StatusSwitchingProtocols)
 	}
 
 	time.Sleep(1 * time.Second)
@@ -73,10 +84,14 @@ func TestMaximumConnections(t *testing.T) {
 	}
 
 	// Third person should not be able to connect to peer to peer call
-	_, _, err = websocket.DefaultDialer.Dial("ws://localhost:3000/websocket", nil)
-	if err != nil {
-		t.Error(err)
+	_, resp, err = websocket.DefaultDialer.Dial("ws://localhost:3000/websocket", nil)
+	if err == nil {
+		t.Error("expected error in third response")
 		return
+	}
+
+	if resp.StatusCode != http.StatusLocked {
+		t.Errorf("unexpected third response status: %d; expected %d", resp.StatusCode, http.StatusLocked)
 	}
 
 	time.Sleep(1 * time.Second)
@@ -87,8 +102,8 @@ func TestMaximumConnections(t *testing.T) {
 	}
 }
 
-// // TestReconnectCaller test that if Caller drops connection,
-// // a new connection is reinitialized
+// TestReconnectCaller test that if Caller drops connection,
+// a new connection is reinitialized
 // func TestReconnectCaller(t *testing.T) {
 // 	return
 // }
