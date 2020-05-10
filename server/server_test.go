@@ -11,7 +11,9 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-func testServerTeardown(server *httptest.Server, ws1, ws2, ws3 *websocket.Conn) {
+func testServerTeardown(t testing.T, server *httptest.Server, ws1, ws2, ws3 *websocket.Conn) {
+	t.Log("in testServerTeardown")
+
 	server.CloseClientConnections()
 	server.Close()
 
@@ -25,24 +27,11 @@ func testServerTeardown(server *httptest.Server, ws1, ws2, ws3 *websocket.Conn) 
 	if ws3 != nil {
 		ws3.Close()
 	}
+
 	return
 }
 
-// TestMaximumConnections tries to connect multiple users to websockets
-// more than the maximum should be rejected
-func TestMaximumConnections(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(websocketHandler))
-	var ws1, ws2, ws3 *websocket.Conn
-
-	defer func() {
-		t.Log("in teardown")
-		testServerTeardown(server, ws1, ws2, ws3)
-	}()
-
-	wsUrl := strings.Replace(server.URL, "http", "ws", 1)
-
-	// check server status
-
+func checkInitialServerStatus(t testing.T) {
 	if wsCount != 0 {
 		t.Fatalf("unexpected active connections, expect 0; have: %d", wsCount)
 	}
@@ -51,13 +40,16 @@ func TestMaximumConnections(t *testing.T) {
 		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", callerStatus, callerInitStatus)
 	}
 
-	// first connection
-	ws1, resp, err := websocket.DefaultDialer.Dial(wsUrl, nil)
+	return
+}
+
+func firstWSConnection(t testing.T, wsUrl string) (ws websocket.Conn) {
+	wstmp, resp, err := websocket.DefaultDialer.Dial(wsUrl, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	defer ws1.Close()
+	ws = *wstmp
 
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		t.Fatalf("unexpected first response status: %d; expected: %d", resp.StatusCode, http.StatusSwitchingProtocols)
@@ -70,7 +62,7 @@ func TestMaximumConnections(t *testing.T) {
 		t.Fatalf("unexpected active connections, expect 1; have: %d", wsCount)
 	}
 
-	msgType, msgBody, err := ws1.ReadMessage()
+	msgType, msgBody, err := ws.ReadMessage()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,8 +84,30 @@ func TestMaximumConnections(t *testing.T) {
 		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", callerStatus, callerInitStatus)
 	}
 
+	return
+}
+
+// TestMaximumConnections tries to connect multiple users to websockets
+// more than the maximum should be rejected
+func TestMaximumConnections(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(websocketHandler))
+	var ws1, ws2, ws3 *websocket.Conn
+
+	defer func() {
+		testServerTeardown(*t, server, ws1, ws2, ws3)
+	}()
+
+	wsUrl := strings.Replace(server.URL, "http", "ws", 1)
+
+	// check server status
+	checkInitialServerStatus(*t)
+
+	// first connection
+	wstmp := firstWSConnection(*t, wsUrl)
+	ws1 = &wstmp
+
 	// second connection
-	ws2, resp, err = websocket.DefaultDialer.Dial(wsUrl, nil)
+	ws2, resp, err := websocket.DefaultDialer.Dial(wsUrl, nil)
 	if err != nil {
 		t.Fatal(err)
 
@@ -135,21 +149,31 @@ func TestReconnectCaller(t *testing.T) {
 	var ws1 *websocket.Conn
 
 	defer func() {
-		t.Log("in teardown")
-		testServerTeardown(server, ws1, nil, nil)
+		testServerTeardown(*t, server, ws1, nil, nil)
 	}()
 
 	wsUrl := strings.Replace(server.URL, "http", "ws", 1)
 
+	// check server status
+	checkInitialServerStatus(*t)
+
+	// first connection
+	wstmp := firstWSConnection(*t, wsUrl)
+	ws1 = &wstmp
+
+	ws1.Close()
+
+	// sleep for counter update
+	time.Sleep(500 * time.Millisecond)
+
 	if wsCount != 0 {
-		t.Fatalf("unexpected active connections, expect 0; have: %d", wsCount)
+		t.Fatalf("unexpected number of active connections, expect 0; have: %d", wsCount)
 	}
 
 	if callerStatus != callerUnsetStatus {
-		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", callerStatus, callerInitStatus)
+		t.Fatalf("unexpected callerStatus for first connection disconnect: %s; expected %s", callerStatus, callerInitStatus)
 	}
 
-	// first connection
 	ws1, resp, err := websocket.DefaultDialer.Dial(wsUrl, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -191,6 +215,6 @@ func TestReconnectCaller(t *testing.T) {
 
 // TestReconnectCaller test that if Callee drops connection,
 // a new connection is reinitialized
-// func TestReconnectCallee(t *testing.T) {
-// 	return
-// }
+func TestReconnectCallee(t *testing.T) {
+	return
+}
