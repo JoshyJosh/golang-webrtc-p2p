@@ -216,5 +216,73 @@ func TestReconnectCaller(t *testing.T) {
 // TestReconnectCaller test that if Callee drops connection,
 // a new connection is reinitialized
 func TestReconnectCallee(t *testing.T) {
-	return
+	server := httptest.NewServer(http.HandlerFunc(websocketHandler))
+	var ws1, ws2 *websocket.Conn
+
+	defer func() {
+		testServerTeardown(*t, server, ws1, ws2, nil)
+	}()
+
+	wsUrl := strings.Replace(server.URL, "http", "ws", 1)
+
+	// check server status
+	checkInitialServerStatus(*t)
+
+	// first connection
+	wstmp := firstWSConnection(*t, wsUrl)
+	ws1 = &wstmp
+
+	// second connection
+	ws2, resp, err := websocket.DefaultDialer.Dial(wsUrl, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("unexpected second response status: %d; expected %d", resp.StatusCode, http.StatusSwitchingProtocols)
+	}
+
+	// sleep for counter update
+	time.Sleep(500 * time.Millisecond)
+
+	if wsCount != 2 {
+		t.Fatalf("unexpected active connections, expect 2; have: %d", wsCount)
+	}
+
+	if callerStatus != callerInitStatus {
+		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", callerStatus, callerInitStatus)
+	}
+
+	ws2.Close()
+
+	// sleep for counter update
+	time.Sleep(500 * time.Millisecond)
+
+	if wsCount != 1 {
+		t.Fatalf("unexpected active connections, expect 1; have: %d", wsCount)
+	}
+
+	if callerStatus != callerInitStatus {
+		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", callerStatus, callerInitStatus)
+	}
+
+	ws2, resp, err = websocket.DefaultDialer.Dial(wsUrl, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("unexpected second response status: %d; expected %d", resp.StatusCode, http.StatusSwitchingProtocols)
+	}
+
+	// sleep for counter update
+	time.Sleep(500 * time.Millisecond)
+
+	if wsCount != 2 {
+		t.Fatalf("unexpected active connections, expect 2; have: %d", wsCount)
+	}
+
+	if callerStatus != callerInitStatus {
+		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", callerStatus, callerInitStatus)
+	}
 }
