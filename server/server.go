@@ -6,6 +6,7 @@ import (
 	"html/template"
 	"net/http"
 	"sync"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -65,8 +66,9 @@ const wsMsgICECandidate = "ICECandidate"
 
 var wsMessageTypes = [...]string{wsMsgInitCaller, wsMsgCallerSessionDesc, wsMsgReceiverSessionDesc, wsMsgICECandidate}
 
-var wsCount int
-var maxConn = 2
+// set as  signed int in case of negative counter corner cases
+var wsCount int32
+var maxConn int32 = 2
 
 // isValidIncomingType validates if incoming wsMsg.MsgType has been defined
 // and should be accepted
@@ -96,175 +98,182 @@ func init() {
 }
 
 func StartServer(addr string) (err error) {
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		logrus.Info("Got accessed")
-		if r.URL.Path == "/" {
-			temp := template.Must(template.ParseFiles("templates/template.html"))
-			data := struct{ Title string }{Title: "Client to client call"}
-			err = temp.Execute(w, data)
-			if err != nil {
-				logrus.Error(err)
-				return
-			}
-		} else {
-			http.FileServer(http.Dir("templates")).ServeHTTP(w, r)
-		}
-	})
-	http.HandleFunc("/websocket", func(w http.ResponseWriter, req *http.Request) {
-		if wsCount >= maxConn {
-			logrus.Warnf("Maximum connections reached: %d", maxConn)
-			// return locked status for too many connections
-			w.WriteHeader(http.StatusLocked)
-			return
-		}
-		conn, err := upgrader.Upgrade(w, req, nil)
-		if err != nil {
-			logrus.Error(err)
-			return
-		}
+	// reset globals where needed
+	wsCount = 0
 
-		logrus.Info("Added new WS connection")
-		wsCount++
-
-		// register new user when conn has been upgraded
-		newUUID, err := uuid.NewUUID()
-		if err != nil {
-			logrus.Error(err)
-			return
-		}
-
-		curWSConn := WSConn{
-			ID:   newUUID,
-			conn: conn,
-		}
-
-		// @todo consider ws connection drop by caller
-		// @todo setup goroutine for caller/receiver sync
-		connRegister.Lock()
-		connRegisterLen := len(connRegister.sessionDescriptions)
-		connRegister.Unlock()
-
-		if connRegisterLen == 0 && callerStatus == callerUnsetStatus {
-			logrus.Info("Initializing caller")
-
-			initCallerMessage := wsMsg{
-				MsgType: wsMsgInitCaller,
-			}
-
-			initCallerJSON, err := json.Marshal(initCallerMessage)
-			if err != nil {
-				logrus.Error(err)
-				return
-			}
-
-			conn.WriteMessage(websocket.TextMessage, initCallerJSON)
-			callerStatus = callerInitStatus
-		} else if connRegisterLen >= 0 && callerStatus != callerUnsetStatus {
-
-			go initReceiver(&curWSConn)
-		}
-
-		for {
-			msgType, msg, err := conn.ReadMessage()
-
-			if err != nil {
-				logrus.Error(err)
-				// remove connection from valid sessionDescriptions
-				connRegister.Lock()
-				if connRegister.sessionDescriptions[curWSConn.ID].isCaller {
-					callerStatus = callerUnsetStatus
-				}
-				delete(connRegister.sessionDescriptions, curWSConn.ID)
-				connRegister.Unlock()
-
-				wsCount--
-				return
-			}
-
-			if msgType != websocket.TextMessage {
-				logrus.Errorf("Unknown gorilla websocket message type: %d", msgType)
-				return
-			}
-
-			var clientWSMessage wsMsg
-
-			if err := json.Unmarshal(msg, &clientWSMessage); err != nil {
-				logrus.Error(err)
-				return
-			}
-
-			if !clientWSMessage.isValidIncomingType() {
-				logrus.Error("Undefined websocketMessageType: ", clientWSMessage.MsgType)
-				return
-			}
-
-			connRegister.Lock()
-			_, ok := connRegister.sessionDescriptions[curWSConn.ID]
-			if !ok {
-				curConnCred := connCreds{
-					sessionDescription: clientWSMessage.Data,
-					conn:               curWSConn.conn,
-				}
-
-				// first description to be registered is the caller
-				if len(connRegister.sessionDescriptions) == 0 {
-					curConnCred.isCaller = true
-				}
-
-				logrus.Info("Adding new sessionDescription, current count: ", len(connRegister.sessionDescriptions))
-				connRegister.sessionDescriptions[curWSConn.ID] = curConnCred
-
-				if curConnCred.isCaller {
-					curWSConn.isCaller = true
-					callerStatus = callerSetStatus
-					go receiverICEBuffer(curWSConn.conn)
-					callerReady <- true
-				}
-			}
-
-			logrus.Info("Receiving message type: ", clientWSMessage.MsgType, clientWSMessage.Data)
-			logrus.Info(len(connRegister.sessionDescriptions))
-
-			if clientWSMessage.MsgType == wsMsgReceiverSessionDesc {
-				for _, sd := range connRegister.sessionDescriptions {
-					if sd.isCaller {
-						logrus.Info("Sending session description to caller")
-						// send session description to caller
-						receiverSessionMessage := wsMsg{
-							MsgType: wsMsgReceiverSessionDesc,
-							Data:    clientWSMessage.Data,
-						}
-
-						receiverSessionJSON, err := json.Marshal(receiverSessionMessage)
-						if err != nil {
-							logrus.Error(err)
-							return
-						}
-
-						sd.conn.WriteMessage(websocket.TextMessage, receiverSessionJSON)
-
-						receiverReady <- true
-					}
-				}
-			} else if clientWSMessage.MsgType == wsMsgICECandidate {
-				// @todo possible refactoring
-				logrus.Info("Is caller ICE candidate: ", curWSConn.isCaller)
-				if curWSConn.isCaller {
-					iceCandidatesCaller.Lock()
-					iceCandidatesCaller.messages = append(iceCandidatesCaller.messages, msg)
-					iceCandidatesCaller.Unlock()
-				} else {
-					iceCandidatesReceiver.Lock()
-					iceCandidatesReceiver.messages = append(iceCandidatesReceiver.messages, msg)
-					iceCandidatesReceiver.Unlock()
-				}
-			}
-
-			connRegister.Unlock()
-		}
-	})
+	http.HandleFunc("/", indexPageHandler)
+	http.HandleFunc("/websocket", websocketHandler)
 
 	return http.ListenAndServe(addr, nil)
+}
+
+func indexPageHandler(w http.ResponseWriter, r *http.Request) {
+	logrus.Info("Got accessed")
+	if r.URL.Path == "/" {
+		temp := template.Must(template.ParseFiles("templates/template.html"))
+		data := struct{ Title string }{Title: "Client to client call"}
+		err := temp.Execute(w, data)
+		if err != nil {
+			logrus.Error(err)
+			return
+		}
+	} else {
+		http.FileServer(http.Dir("templates")).ServeHTTP(w, r)
+	}
+}
+
+func websocketHandler(w http.ResponseWriter, req *http.Request) {
+	if wsCount >= maxConn {
+		logrus.Warnf("Maximum connections reached: %d", maxConn)
+		// return locked status for too many connections
+		w.WriteHeader(http.StatusLocked)
+		return
+	}
+	conn, err := upgrader.Upgrade(w, req, nil)
+	if err != nil {
+		logrus.Error(err)
+		return
+	}
+
+	defer conn.Close()
+
+	logrus.Info("Added new WS connection")
+	atomic.AddInt32(&wsCount, 1)
+
+	// register new user when conn has been upgraded
+	newUUID, err := uuid.NewUUID()
+	if err != nil {
+		logrus.Error(err)
+		return
+	}
+
+	curWSConn := WSConn{
+		ID:   newUUID,
+		conn: conn,
+	}
+
+	// @todo consider ws connection drop by caller and receiver swap to caller status
+	// @todo setup goroutine for caller/receiver sync
+	connRegister.Lock()
+	connRegisterLen := len(connRegister.sessionDescriptions)
+	connRegister.Unlock()
+
+	if connRegisterLen == 0 && callerStatus == callerUnsetStatus {
+		logrus.Info("Initializing caller")
+
+		initCallerMessage := wsMsg{
+			MsgType: wsMsgInitCaller,
+		}
+
+		initCallerJSON, err := json.Marshal(initCallerMessage)
+		if err != nil {
+			logrus.Error(err)
+			return
+		}
+
+		conn.WriteMessage(websocket.TextMessage, initCallerJSON)
+		callerStatus = callerInitStatus
+		curWSConn.isCaller = true
+	} else if connRegisterLen >= 0 && callerStatus != callerUnsetStatus {
+
+		go initReceiver(&curWSConn)
+	}
+
+	for {
+		msgType, msg, err := conn.ReadMessage()
+
+		if err != nil {
+			logrus.Error(err)
+			// remove connection from valid sessionDescriptions
+			connRegister.Lock()
+			if curWSConn.isCaller {
+				callerStatus = callerUnsetStatus
+			}
+			delete(connRegister.sessionDescriptions, curWSConn.ID)
+			connRegister.Unlock()
+
+			logrus.Error("Removing wsCount")
+			atomic.AddInt32(&wsCount, -1)
+			logrus.Errorf("new count %d", wsCount)
+			return
+		}
+
+		if msgType != websocket.TextMessage {
+			logrus.Errorf("Unknown gorilla websocket message type: %d", msgType)
+			return
+		}
+
+		var clientWSMessage wsMsg
+
+		if err := json.Unmarshal(msg, &clientWSMessage); err != nil {
+			logrus.Error(err)
+			return
+		}
+
+		if !clientWSMessage.isValidIncomingType() {
+			logrus.Error("Undefined websocketMessageType: ", clientWSMessage.MsgType)
+			return
+		}
+
+		connRegister.Lock()
+		_, ok := connRegister.sessionDescriptions[curWSConn.ID]
+		if !ok {
+			curConnCred := connCreds{
+				sessionDescription: clientWSMessage.Data,
+				conn:               curWSConn.conn,
+				isCaller:           curWSConn.isCaller,
+			}
+
+			logrus.Info("Adding new sessionDescription, current count: ", len(connRegister.sessionDescriptions))
+			connRegister.sessionDescriptions[curWSConn.ID] = curConnCred
+
+			if curConnCred.isCaller {
+				callerStatus = callerSetStatus
+				go receiverICEBuffer(curWSConn.conn)
+				callerReady <- true
+			}
+		}
+
+		logrus.Info("Receiving message type: ", clientWSMessage.MsgType, clientWSMessage.Data)
+		logrus.Info(len(connRegister.sessionDescriptions))
+
+		if clientWSMessage.MsgType == wsMsgReceiverSessionDesc {
+			for _, sd := range connRegister.sessionDescriptions {
+				if sd.isCaller {
+					logrus.Info("Sending session description to caller")
+					// send session description to caller
+					receiverSessionMessage := wsMsg{
+						MsgType: wsMsgReceiverSessionDesc,
+						Data:    clientWSMessage.Data,
+					}
+
+					receiverSessionJSON, err := json.Marshal(receiverSessionMessage)
+					if err != nil {
+						logrus.Error(err)
+						return
+					}
+
+					sd.conn.WriteMessage(websocket.TextMessage, receiverSessionJSON)
+
+					receiverReady <- true
+				}
+			}
+		} else if clientWSMessage.MsgType == wsMsgICECandidate {
+			// @todo possible refactoring
+			logrus.Info("Is caller ICE candidate: ", curWSConn.isCaller)
+			if curWSConn.isCaller {
+				iceCandidatesCaller.Lock()
+				iceCandidatesCaller.messages = append(iceCandidatesCaller.messages, msg)
+				iceCandidatesCaller.Unlock()
+			} else {
+				iceCandidatesReceiver.Lock()
+				iceCandidatesReceiver.messages = append(iceCandidatesReceiver.messages, msg)
+				iceCandidatesReceiver.Unlock()
+			}
+		}
+
+		connRegister.Unlock()
+	}
 }
 
 func initReceiver(wsConn *WSConn) {
