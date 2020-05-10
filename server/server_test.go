@@ -11,6 +11,23 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+func testServerTeardown(server *httptest.Server, ws1, ws2, ws3 *websocket.Conn) {
+	server.CloseClientConnections()
+	server.Close()
+
+	// cannot defer during the test, must do Closes on teardown
+	if ws1 != nil {
+		ws1.Close()
+	}
+	if ws2 != nil {
+		ws2.Close()
+	}
+	if ws3 != nil {
+		ws3.Close()
+	}
+	return
+}
+
 // TestMaximumConnections tries to connect multiple users to websockets
 // more than the maximum should be rejected
 func TestMaximumConnections(t *testing.T) {
@@ -18,37 +35,27 @@ func TestMaximumConnections(t *testing.T) {
 	var ws1, ws2, ws3 *websocket.Conn
 
 	defer func() {
-		t.Log("Made it to defer")
-		server.CloseClientConnections()
-		server.Close()
-
-		// cannot defer during the test, must do Closes on teardown
-		if ws1 != nil {
-			ws1.Close()
-		}
-		if ws2 != nil {
-			ws2.Close()
-		}
-		if ws3 != nil {
-			ws3.Close()
-		}
+		t.Log("in teardown")
+		testServerTeardown(server, ws1, ws2, ws3)
 	}()
 
 	wsUrl := strings.Replace(server.URL, "http", "ws", 1)
 
+	// check server status
+
 	if wsCount != 0 {
 		t.Fatalf("unexpected active connections, expect 0; have: %d", wsCount)
-		return
+	}
+
+	if callerStatus != callerUnsetStatus {
+		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", callerStatus, callerInitStatus)
 	}
 
 	// first connection
 	ws1, resp, err := websocket.DefaultDialer.Dial(wsUrl, nil)
 	if err != nil {
 		t.Fatal(err)
-		return
 	}
-
-	time.Sleep(500 * time.Millisecond)
 
 	defer ws1.Close()
 
@@ -56,69 +63,68 @@ func TestMaximumConnections(t *testing.T) {
 		t.Fatalf("unexpected first response status: %d; expected: %d", resp.StatusCode, http.StatusSwitchingProtocols)
 	}
 
-	time.Sleep(1 * time.Second)
+	// sleep for counter update
+	time.Sleep(500 * time.Millisecond)
 
 	if wsCount != 1 {
 		t.Fatalf("unexpected active connections, expect 1; have: %d", wsCount)
-		return
 	}
 
 	msgType, msgBody, err := ws1.ReadMessage()
 	if err != nil {
 		t.Fatal(err)
-		return
 	}
 
 	if msgType != websocket.TextMessage {
-		t.Fatalf("Unknown response message type: %d", msgType)
-		return
+		t.Fatalf("unknown response message type: %d", msgType)
 	}
 
 	msg1 := wsMsg{}
 	if err = json.Unmarshal(msgBody, &msg1); err != nil {
 		t.Fatal(err)
-		return
 	}
 
 	if msg1.MsgType != wsMsgInitCaller {
-		t.Fatalf("Unknown response message body: %s; expected: %s", msg1.MsgType, wsMsgInitCaller)
-		return
+		t.Fatalf("unknown response message body: %s; expected: %s", msg1.MsgType, wsMsgInitCaller)
+	}
+
+	if callerStatus != callerInitStatus {
+		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", callerStatus, callerInitStatus)
 	}
 
 	// second connection
 	ws2, resp, err = websocket.DefaultDialer.Dial(wsUrl, nil)
 	if err != nil {
 		t.Fatal(err)
-		return
+
 	}
 
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		t.Fatalf("unexpected second response status: %d; expected %d", resp.StatusCode, http.StatusSwitchingProtocols)
 	}
 
-	time.Sleep(1 * time.Second)
+	// sleep for counter update
+	time.Sleep(500 * time.Millisecond)
 
 	if wsCount != 2 {
 		t.Fatalf("unexpected active connections, expect 2; have: %d", wsCount)
-		return
 	}
 
 	// Third person should not be able to connect to peer to peer call
 	ws3, resp, err = websocket.DefaultDialer.Dial(wsUrl, nil)
 	if err == nil {
 		t.Fatal("expected error in third response")
-		return
 	}
 
 	if resp.StatusCode != http.StatusLocked {
 		t.Fatalf("unexpected third response status: %d; expected %d", resp.StatusCode, http.StatusLocked)
 	}
 
-	time.Sleep(1 * time.Second)
+	// sleep for counter update
+	time.Sleep(500 * time.Millisecond)
 
 	if wsCount != 2 {
 		t.Fatalf("unexpected active connections, expect 2; have: %d", wsCount)
-		return
 	}
 }
 
@@ -129,28 +135,24 @@ func TestReconnectCaller(t *testing.T) {
 	var ws1 *websocket.Conn
 
 	defer func() {
-		t.Log("Made it to defer")
-		server.CloseClientConnections()
-		server.Close()
-
-		// cannot defer during the test, must do Closes on teardown
-		if ws1 != nil {
-			ws1.Close()
-		}
+		t.Log("in teardown")
+		testServerTeardown(server, ws1, nil, nil)
 	}()
 
 	wsUrl := strings.Replace(server.URL, "http", "ws", 1)
 
 	if wsCount != 0 {
 		t.Fatalf("unexpected active connections, expect 0; have: %d", wsCount)
-		return
+	}
+
+	if callerStatus != callerUnsetStatus {
+		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", callerStatus, callerInitStatus)
 	}
 
 	// first connection
 	ws1, resp, err := websocket.DefaultDialer.Dial(wsUrl, nil)
 	if err != nil {
 		t.Fatal(err)
-		return
 	}
 
 	if resp.StatusCode != http.StatusSwitchingProtocols {
@@ -160,37 +162,35 @@ func TestReconnectCaller(t *testing.T) {
 	msgType, msgBody, err := ws1.ReadMessage()
 	if err != nil {
 		t.Fatal(err)
-		return
 	}
 
-	time.Sleep(1 * time.Second)
+	// sleep for counter update
+	time.Sleep(500 * time.Millisecond)
 
 	if wsCount != 1 {
 		t.Fatalf("unexpected number of active connections, expect 1; have: %d", wsCount)
-		return
 	}
 
 	if msgType != websocket.TextMessage {
 		t.Fatalf("Unknown response message type: %d", msgType)
-		return
 	}
 
 	msg1 := wsMsg{}
 	if err = json.Unmarshal(msgBody, &msg1); err != nil {
 		t.Fatal(err)
-		return
 	}
 
 	if msg1.MsgType != wsMsgInitCaller {
 		t.Fatalf("Unknown response message body: %s; expected: %s", msg1.MsgType, wsMsgInitCaller)
-		return
 	}
 
-	return
+	if callerStatus != callerInitStatus {
+		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", callerStatus, callerInitStatus)
+	}
 }
 
-// // TestReconnectCaller test that if Callee drops connection,
-// // a new connection is reinitialized
+// TestReconnectCaller test that if Callee drops connection,
+// a new connection is reinitialized
 // func TestReconnectCallee(t *testing.T) {
 // 	return
 // }
