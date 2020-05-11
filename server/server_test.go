@@ -31,6 +31,7 @@ func testServerTeardown(t *testing.T, ws1, ws2, ws3 *websocket.Conn) {
 	return
 }
 
+// check that server has no active connections and caller is unset
 func checkInitialServerStatus(t *testing.T) {
 	chatroomCounter.RLock()
 	if chatroomCounter.wsCount != 0 {
@@ -46,6 +47,7 @@ func checkInitialServerStatus(t *testing.T) {
 	return
 }
 
+// first ws connection is commmon among all subtests
 func firstWSConnection(t testing.T, wsUrl string) (ws websocket.Conn) {
 	t.Log("Checking initial status")
 
@@ -301,6 +303,12 @@ func testReconnectCallee(t *testing.T, server *httptest.Server) {
 		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomCounter.callerStatus, callerInitStatus)
 	}
 	chatroomCounter.RUnlock()
+}
+
+// testCalleeUpgradeToCaller should upgrade callee to Caller in case of Caller disconnect
+func testCalleeUpgradeToCaller(t *testing.T, server string) {
+	// @todo implement upgrade logic
+	return
 }
 
 func TestUserConnections(t *testing.T) {

@@ -42,6 +42,8 @@ const callerInitStatus = "initializing"
 const callerSetStatus = "set"
 
 var callerReady chan bool
+var callerDisconnect chan bool
+var receiverDisconnect chan bool
 
 // @todo rename to keep it semantic
 // fore receivers SDP
@@ -100,6 +102,8 @@ type WSConn struct {
 func init() {
 	connRegister.sessionDescriptions = make(map[uuid.UUID]connCreds)
 	callerReady = make(chan bool, 1)
+	callerDisconnect = make(chan bool, 1)
+	receiverDisconnect = make(chan bool, 1)
 
 	chatroomCounter.Lock()
 	chatroomCounter.callerStatus = callerUnsetStatus
@@ -209,6 +213,9 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 				chatroomCounter.Lock()
 				chatroomCounter.callerStatus = callerUnsetStatus
 				chatroomCounter.Unlock()
+				// callerDisconnect <- true
+			} else {
+				receiverDisconnect <- true
 			}
 			delete(connRegister.sessionDescriptions, curWSConn.ID)
 			connRegister.Unlock()
@@ -306,7 +313,18 @@ func initReceiver(wsConn *WSConn) {
 	logrus.Info("initReceiver ready")
 
 	//@todo add switch to drop goroutine in case of caller reconnect
-	<-callerReady
+	select {
+	case <-callerReady:
+		logrus.Info("callerReady channel received")
+	case <-callerDisconnect:
+		// @todo promote receiver to caller
+		logrus.Warn("Caller disconnected")
+		return
+	case <-receiverDisconnect:
+		// handle receiver disconnect when still waiting on session descriptions
+		logrus.Warn("Receiver disconnected")
+		return
+	}
 
 	logrus.Info("Sending caller info to reciever")
 
@@ -328,7 +346,12 @@ func initReceiver(wsConn *WSConn) {
 		}
 	}
 
-	for {
+	select {
+	case <-receiverDisconnect:
+		logrus.Warn("Receiver disconnected")
+		return
+	//@todo make iceCandidatesCaller should be channel
+	default:
 		iceCandidatesCaller.Lock()
 		if len(iceCandidatesCaller.messages) > 0 {
 			logrus.Info("Sending ICE candidate")
