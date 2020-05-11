@@ -6,7 +6,6 @@ import (
 	"html/template"
 	"net/http"
 	"sync"
-	"sync/atomic"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -42,8 +41,6 @@ const callerUnsetStatus = "unset"
 const callerInitStatus = "initializing"
 const callerSetStatus = "set"
 
-var callerStatus = callerUnsetStatus
-
 var callerReady chan bool
 
 // @todo rename to keep it semantic
@@ -67,8 +64,16 @@ const wsMsgICECandidate = "ICECandidate"
 var wsMessageTypes = [...]string{wsMsgInitCaller, wsMsgCallerSessionDesc, wsMsgReceiverSessionDesc, wsMsgICECandidate}
 
 // set as  signed int in case of negative counter corner cases
-var wsCount int32
-var maxConn int32 = 2
+
+type wsCounter struct {
+	sync.RWMutex
+	wsCount      int
+	callerStatus string
+}
+
+var chatroomCounter = wsCounter{}
+
+var maxConn = 2
 
 // isValidIncomingType validates if incoming wsMsg.MsgType has been defined
 // and should be accepted
@@ -95,11 +100,17 @@ type WSConn struct {
 func init() {
 	connRegister.sessionDescriptions = make(map[uuid.UUID]connCreds)
 	callerReady = make(chan bool, 1)
+
+	chatroomCounter.Lock()
+	chatroomCounter.callerStatus = callerUnsetStatus
+	chatroomCounter.Unlock()
 }
 
 func StartServer(addr string) (err error) {
 	// reset globals where needed
-	wsCount = 0
+	chatroomCounter.Lock()
+	chatroomCounter.wsCount = 0
+	chatroomCounter.Unlock()
 
 	http.HandleFunc("/", indexPageHandler)
 	http.HandleFunc("/websocket", websocketHandler)
@@ -123,12 +134,16 @@ func indexPageHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func websocketHandler(w http.ResponseWriter, req *http.Request) {
-	if wsCount >= maxConn {
+	chatroomCounter.RLock()
+	if chatroomCounter.wsCount >= maxConn {
 		logrus.Warnf("Maximum connections reached: %d", maxConn)
 		// return locked status for too many connections
 		w.WriteHeader(http.StatusLocked)
+		chatroomCounter.RUnlock()
 		return
 	}
+	chatroomCounter.RUnlock()
+
 	conn, err := upgrader.Upgrade(w, req, nil)
 	if err != nil {
 		logrus.Error(err)
@@ -138,7 +153,10 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 	defer conn.Close()
 
 	logrus.Info("Added new WS connection")
-	atomic.AddInt32(&wsCount, 1)
+
+	chatroomCounter.Lock()
+	chatroomCounter.wsCount++
+	chatroomCounter.Unlock()
 
 	// register new user when conn has been upgraded
 	newUUID, err := uuid.NewUUID()
@@ -158,7 +176,8 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 	connRegisterLen := len(connRegister.sessionDescriptions)
 	connRegister.Unlock()
 
-	if connRegisterLen == 0 && callerStatus == callerUnsetStatus {
+	chatroomCounter.Lock()
+	if connRegisterLen == 0 && chatroomCounter.callerStatus == callerUnsetStatus {
 		logrus.Info("Initializing caller")
 
 		initCallerMessage := wsMsg{
@@ -172,12 +191,12 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 		}
 
 		conn.WriteMessage(websocket.TextMessage, initCallerJSON)
-		callerStatus = callerInitStatus
+		chatroomCounter.callerStatus = callerInitStatus
 		curWSConn.isCaller = true
-	} else if connRegisterLen >= 0 && callerStatus != callerUnsetStatus {
-
+	} else if connRegisterLen >= 0 && chatroomCounter.callerStatus != callerUnsetStatus {
 		go initReceiver(&curWSConn)
 	}
+	chatroomCounter.Unlock()
 
 	for {
 		msgType, msg, err := conn.ReadMessage()
@@ -187,14 +206,19 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 			// remove connection from valid sessionDescriptions
 			connRegister.Lock()
 			if curWSConn.isCaller {
-				callerStatus = callerUnsetStatus
+				chatroomCounter.Lock()
+				chatroomCounter.callerStatus = callerUnsetStatus
+				chatroomCounter.Unlock()
 			}
 			delete(connRegister.sessionDescriptions, curWSConn.ID)
 			connRegister.Unlock()
 
+			chatroomCounter.Lock()
 			logrus.Error("Removing wsCount")
-			atomic.AddInt32(&wsCount, -1)
-			logrus.Errorf("new count %d", wsCount)
+			chatroomCounter.wsCount--
+
+			logrus.Errorf("new count %d", chatroomCounter.wsCount)
+			chatroomCounter.Unlock()
 			return
 		}
 
@@ -228,7 +252,9 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 			connRegister.sessionDescriptions[curWSConn.ID] = curConnCred
 
 			if curConnCred.isCaller {
-				callerStatus = callerSetStatus
+				chatroomCounter.Lock()
+				chatroomCounter.callerStatus = callerSetStatus
+				chatroomCounter.Unlock()
 				go receiverICEBuffer(curWSConn.conn)
 				callerReady <- true
 			}
@@ -279,6 +305,7 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 func initReceiver(wsConn *WSConn) {
 	logrus.Info("initReceiver ready")
 
+	//@todo add switch to drop goroutine in case of caller reconnect
 	<-callerReady
 
 	logrus.Info("Sending caller info to reciever")
