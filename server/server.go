@@ -182,21 +182,7 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 
 	chatroomCounter.Lock()
 	if connRegisterLen == 0 && chatroomCounter.callerStatus == callerUnsetStatus {
-		logrus.Info("Initializing caller")
-
-		initCallerMessage := wsMsg{
-			MsgType: wsMsgInitCaller,
-		}
-
-		initCallerJSON, err := json.Marshal(initCallerMessage)
-		if err != nil {
-			logrus.Error(err)
-			return
-		}
-
-		conn.WriteMessage(websocket.TextMessage, initCallerJSON)
-		chatroomCounter.callerStatus = callerInitStatus
-		curWSConn.isCaller = true
+		initCaller(&curWSConn)
 	} else if connRegisterLen >= 0 && chatroomCounter.callerStatus != callerUnsetStatus {
 		go initReceiver(&curWSConn)
 	}
@@ -208,15 +194,20 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 		if err != nil {
 			logrus.Error(err)
 			// remove connection from valid sessionDescriptions
-			connRegister.Lock()
 			if curWSConn.isCaller {
 				chatroomCounter.Lock()
 				chatroomCounter.callerStatus = callerUnsetStatus
+
+				if chatroomCounter.wsCount > 1 {
+					callerDisconnect <- true
+				}
 				chatroomCounter.Unlock()
-				// callerDisconnect <- true
+
 			} else {
 				receiverDisconnect <- true
 			}
+
+			connRegister.Lock()
 			delete(connRegister.sessionDescriptions, curWSConn.ID)
 			connRegister.Unlock()
 
@@ -309,6 +300,24 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
+func initCaller(wsConn *WSConn) {
+	logrus.Info("Initializing caller")
+
+	initCallerMessage := wsMsg{
+		MsgType: wsMsgInitCaller,
+	}
+
+	initCallerJSON, err := json.Marshal(initCallerMessage)
+	if err != nil {
+		logrus.Error(err)
+		return
+	}
+
+	wsConn.conn.WriteMessage(websocket.TextMessage, initCallerJSON)
+	chatroomCounter.callerStatus = callerInitStatus
+	wsConn.isCaller = true
+}
+
 func initReceiver(wsConn *WSConn) {
 	logrus.Info("initReceiver ready")
 
@@ -319,6 +328,9 @@ func initReceiver(wsConn *WSConn) {
 	case <-callerDisconnect:
 		// @todo promote receiver to caller
 		logrus.Warn("Caller disconnected")
+		chatroomCounter.Lock()
+		initCaller(wsConn)
+		chatroomCounter.Unlock()
 		return
 	case <-receiverDisconnect:
 		// handle receiver disconnect when still waiting on session descriptions
