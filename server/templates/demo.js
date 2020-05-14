@@ -16,7 +16,45 @@ var log = msg => {
   document.getElementById('logs').innerHTML += msg + '<br>'
 }
 
-pc.oniceconnectionstatechange = e => log(pc.iceConnectionState)
+function closeVideoCall() {
+  let remoteVideo = document.getElementById("received_video")
+  let localVideo = document.getElementById("local_video")
+
+  if (remoteVideo.srcObject) {
+    remoteVideo.srcObject.getTracks().forEach(track => track.stop());
+  }
+
+  if (localVideo.srcObject) {
+    localVideo.srcObject.getTracks().forEach(track => track.stop());
+  }
+
+  pc.close()
+
+  remoteVideo.removeAttribute("src");
+  remoteVideo.removeAttribute("srcObject");
+  localVideo.removeAttribute("src");
+  remoteVideo.removeAttribute("srcObject");
+}
+
+pc.oniceconnectionstatechange = e => {
+  log(pc.iceConnectionState)
+
+  switch(pc.iceConnectionState) {
+    case "disconnected":
+    case "closed":
+    case "failed":
+      closeVideoCall()
+      break
+  }
+}
+
+pc.onsignalingstatechange = e => {
+  switch(pc.signalingState) {
+    case "closed":
+      closeVideoCall()
+      break
+  }
+}
 
 pc.onicecandidate = event => {
   console.log("in onicecandidate")
@@ -65,6 +103,7 @@ pc.ontrack = function (event) {
 
 WS.onmessage = function(event) {
   // @todo decode and add message to remote description
+  console.log(event)
   var data = JSON.parse(event.data)
   console.log(event.data)
   switch (data.type) {

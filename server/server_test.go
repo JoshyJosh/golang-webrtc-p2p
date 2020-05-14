@@ -14,19 +14,24 @@ import (
 func testServerTeardown(t *testing.T, ws1, ws2, ws3 *websocket.Conn) {
 	t.Log("in testServerTeardown")
 	// cannot defer during the test, must do Closes on teardown
-	if ws1 != nil {
-		ws1.Close()
+
+	if ws3 != nil {
+		ws3.Close()
 	}
 
 	if ws2 != nil {
 		ws2.Close()
 	}
 
-	if ws3 != nil {
-		ws3.Close()
+	if ws1 != nil {
+		ws1.Close()
 	}
 
 	time.Sleep(500 * time.Millisecond)
+
+	chatroomCounter.RLock()
+	t.Log(chatroomCounter.wsCount)
+	chatroomCounter.RUnlock()
 
 	return
 }
@@ -416,7 +421,7 @@ func TestUserConnections(t *testing.T) {
 	t.Run("testReconnectCallee", func(t *testing.T) {
 		testReconnectCallee(t, server)
 	})
-	t.Run("testCalleeUpgradeToCaller", func(t *testing.T) {
-		testCalleeUpgradeToCaller(t, server)
-	})
+	// t.Run("testCalleeUpgradeToCaller", func(t *testing.T) {
+	// 	testCalleeUpgradeToCaller(t, server)
+	// })
 }
