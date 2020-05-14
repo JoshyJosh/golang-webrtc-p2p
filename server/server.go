@@ -251,7 +251,7 @@ func (wsConn *WSConn) messageLoop(closeHandler chan<- bool) {
 				chatroomCounter.Lock()
 				if chatroomCounter.callerStatus != callerSetStatus && chatroomCounter.receiverStatus != callerUnsetStatus {
 					// sending receiverDisconnect channel
-					receiverDisconnect <- true
+					// receiverDisconnect <- true
 				} else if chatroomCounter.callerStatus == callerSetStatus {
 					callerReady <- true
 				} else {

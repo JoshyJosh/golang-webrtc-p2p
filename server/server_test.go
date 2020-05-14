@@ -40,10 +40,12 @@ func testServerTeardown(t *testing.T, ws1, ws2, ws3 *websocket.Conn) {
 func checkInitialServerStatus(t *testing.T) {
 	chatroomCounter.RLock()
 	if chatroomCounter.wsCount != 0 {
+		defer chatroomCounter.RUnlock()
 		t.Fatalf("unexpected active connections, expect 0; have: %d", chatroomCounter.wsCount)
 	}
 
 	if chatroomCounter.callerStatus != callerUnsetStatus {
+		defer chatroomCounter.RUnlock()
 		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomCounter.callerStatus, callerInitStatus)
 	}
 
@@ -72,6 +74,7 @@ func firstWSConnection(t testing.T, wsUrl string) (ws websocket.Conn) {
 
 	chatroomCounter.RLock()
 	if chatroomCounter.wsCount != 1 {
+		defer chatroomCounter.RUnlock()
 		t.Fatalf("unexpected active connections, expect 1; have: %d", chatroomCounter.wsCount)
 	}
 
@@ -97,6 +100,7 @@ func firstWSConnection(t testing.T, wsUrl string) (ws websocket.Conn) {
 
 	chatroomCounter.RLock()
 	if chatroomCounter.callerStatus != callerInitStatus {
+		defer chatroomCounter.RUnlock()
 		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomCounter.callerStatus, callerInitStatus)
 	}
 
@@ -139,6 +143,7 @@ func testMaximumConnections(t *testing.T, server *httptest.Server) {
 
 	chatroomCounter.RLock()
 	if chatroomCounter.wsCount != 2 {
+		defer chatroomCounter.RUnlock()
 		t.Fatalf("unexpected active connections, expect 2; have: %d", chatroomCounter.wsCount)
 	}
 	chatroomCounter.RUnlock()
@@ -154,10 +159,10 @@ func testMaximumConnections(t *testing.T, server *httptest.Server) {
 	}
 
 	chatroomCounter.RLock()
+	defer chatroomCounter.RUnlock()
 	if chatroomCounter.wsCount != 2 {
 		t.Fatalf("unexpected active connections, expect 2; have: %d", chatroomCounter.wsCount)
 	}
-	chatroomCounter.RUnlock()
 }
 
 // TestReconnectCaller test that if Caller drops connection,
@@ -185,10 +190,12 @@ func testReconnectCaller(t *testing.T, server *httptest.Server) {
 
 	chatroomCounter.RLock()
 	if chatroomCounter.wsCount != 0 {
+		defer chatroomCounter.RUnlock()
 		t.Fatalf("unexpected number of active connections, expect 0; have: %d", chatroomCounter.wsCount)
 	}
 
 	if chatroomCounter.callerStatus != callerUnsetStatus {
+		defer chatroomCounter.RUnlock()
 		t.Fatalf("unexpected callerStatus for first connection disconnect: %s; expected %s", chatroomCounter.callerStatus, callerInitStatus)
 	}
 	chatroomCounter.RUnlock()
@@ -208,6 +215,7 @@ func testReconnectCaller(t *testing.T, server *httptest.Server) {
 	}
 
 	chatroomCounter.RLock()
+	defer chatroomCounter.RUnlock()
 	if chatroomCounter.wsCount != 1 {
 		t.Fatalf("unexpected number of active connections, expect 1; have: %d", chatroomCounter.wsCount)
 	}
@@ -228,10 +236,9 @@ func testReconnectCaller(t *testing.T, server *httptest.Server) {
 	if chatroomCounter.callerStatus != callerInitStatus {
 		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomCounter.callerStatus, callerInitStatus)
 	}
-	chatroomCounter.RUnlock()
 }
 
-// TestReconnectCaller test that if Callee drops connection,
+// TestReconnectCallee test that if Callee drops connection,
 // a new connection is reinitialized
 func testReconnectCallee(t *testing.T, server *httptest.Server) {
 	var ws1, ws2 *websocket.Conn
@@ -264,10 +271,12 @@ func testReconnectCallee(t *testing.T, server *httptest.Server) {
 
 	chatroomCounter.RLock()
 	if chatroomCounter.wsCount != 2 {
+		chatroomCounter.RUnlock()
 		t.Fatalf("unexpected active connections, expect 2; have: %d", chatroomCounter.wsCount)
 	}
 
 	if chatroomCounter.callerStatus != callerInitStatus {
+		chatroomCounter.RUnlock()
 		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomCounter.callerStatus, callerInitStatus)
 	}
 	chatroomCounter.RUnlock()
@@ -279,10 +288,12 @@ func testReconnectCallee(t *testing.T, server *httptest.Server) {
 
 	chatroomCounter.RLock()
 	if chatroomCounter.wsCount != 1 {
+		defer chatroomCounter.RUnlock()
 		t.Fatalf("unexpected active connections, expect 1; have: %d", chatroomCounter.wsCount)
 	}
 
 	if chatroomCounter.callerStatus != callerInitStatus {
+		defer chatroomCounter.RUnlock()
 		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomCounter.callerStatus, callerInitStatus)
 	}
 	chatroomCounter.RUnlock()
@@ -300,6 +311,7 @@ func testReconnectCallee(t *testing.T, server *httptest.Server) {
 	time.Sleep(500 * time.Millisecond)
 
 	chatroomCounter.RLock()
+	defer chatroomCounter.RUnlock()
 	if chatroomCounter.wsCount != 2 {
 		t.Fatalf("unexpected active connections, expect 2; have: %d", chatroomCounter.wsCount)
 	}
@@ -307,7 +319,6 @@ func testReconnectCallee(t *testing.T, server *httptest.Server) {
 	if chatroomCounter.callerStatus != callerInitStatus {
 		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomCounter.callerStatus, callerInitStatus)
 	}
-	chatroomCounter.RUnlock()
 }
 
 // testCalleeUpgradeToCaller should upgrade callee to Caller in case of Caller disconnect
@@ -343,10 +354,12 @@ func testCalleeUpgradeToCaller(t *testing.T, server *httptest.Server) {
 
 	chatroomCounter.RLock()
 	if chatroomCounter.wsCount != 2 {
+		defer chatroomCounter.RUnlock()
 		t.Fatalf("unexpected active connections, expect 2; have: %d", chatroomCounter.wsCount)
 	}
 
 	if chatroomCounter.callerStatus != callerInitStatus {
+		defer chatroomCounter.RUnlock()
 		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomCounter.callerStatus, callerInitStatus)
 	}
 	chatroomCounter.RUnlock()
@@ -378,10 +391,12 @@ func testCalleeUpgradeToCaller(t *testing.T, server *httptest.Server) {
 
 	chatroomCounter.RLock()
 	if chatroomCounter.wsCount != 1 {
+		defer chatroomCounter.RUnlock()
 		t.Fatalf("unexpected active connections, expect 1; have: %d", chatroomCounter.wsCount)
 	}
 
 	if chatroomCounter.callerStatus != callerInitStatus {
+		defer chatroomCounter.RUnlock()
 		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomCounter.callerStatus, callerInitStatus)
 	}
 	chatroomCounter.RUnlock()
@@ -399,11 +414,10 @@ func testCalleeUpgradeToCaller(t *testing.T, server *httptest.Server) {
 	time.Sleep(500 * time.Millisecond)
 
 	chatroomCounter.RLock()
+	defer chatroomCounter.RUnlock()
 	if chatroomCounter.wsCount != 2 {
 		t.Fatalf("unexpected active connections, expect 2; have: %d", chatroomCounter.wsCount)
 	}
-
-	chatroomCounter.RUnlock()
 
 	return
 }
