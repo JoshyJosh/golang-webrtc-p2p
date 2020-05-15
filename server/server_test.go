@@ -64,7 +64,6 @@ func firstWSConnection(t testing.T, wsUrl string) (ws websocket.Conn) {
 	}
 
 	ws = *wstmp
-
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		t.Fatalf("unexpected first response status: %d; expected: %d", resp.StatusCode, http.StatusSwitchingProtocols)
 	}
@@ -271,12 +270,12 @@ func testReconnectCallee(t *testing.T, server *httptest.Server) {
 
 	chatroomCounter.RLock()
 	if chatroomCounter.wsCount != 2 {
-		chatroomCounter.RUnlock()
+		defer chatroomCounter.RUnlock()
 		t.Fatalf("unexpected active connections, expect 2; have: %d", chatroomCounter.wsCount)
 	}
 
 	if chatroomCounter.callerStatus != callerInitStatus {
-		chatroomCounter.RUnlock()
+		defer chatroomCounter.RUnlock()
 		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomCounter.callerStatus, callerInitStatus)
 	}
 	chatroomCounter.RUnlock()
@@ -321,7 +320,7 @@ func testReconnectCallee(t *testing.T, server *httptest.Server) {
 	}
 }
 
-// testCalleeUpgradeToCaller should upgrade callee to Caller in case of Caller disconnect
+// testCalleeUpgradeToCaller should upgrade Callee to Caller in case of Caller disconnect
 func testCalleeUpgradeToCaller(t *testing.T, server *httptest.Server) {
 	// @todo implement upgrade logic
 	var ws1, ws2 *websocket.Conn
@@ -424,7 +423,11 @@ func testCalleeUpgradeToCaller(t *testing.T, server *httptest.Server) {
 
 func TestUserConnections(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(websocketHandler))
-	defer server.Close()
+
+	defer func() {
+		server.CloseClientConnections()
+		server.Close()
+	}()
 
 	t.Run("testMaximumConnections", func(t *testing.T) {
 		testMaximumConnections(t, server)
@@ -435,6 +438,7 @@ func TestUserConnections(t *testing.T) {
 	t.Run("testReconnectCallee", func(t *testing.T) {
 		testReconnectCallee(t, server)
 	})
+	// @todo need to refactor
 	// t.Run("testCalleeUpgradeToCaller", func(t *testing.T) {
 	// 	testCalleeUpgradeToCaller(t, server)
 	// })

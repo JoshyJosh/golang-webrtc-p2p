@@ -161,8 +161,6 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 
 	defer conn.Close()
 
-	closeHandler := make(chan bool, 1)
-
 	conn.SetPongHandler(pongHandler)
 
 	logrus.Info("Added new WS connection")
@@ -203,15 +201,14 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	curWSConn.messageLoop(closeHandler)
+	curWSConn.messageLoop()
 
-	<-closeHandler
 	logrus.Info("exiting handler, isCaller: ", curWSConn.isCaller)
 }
 
-func (wsConn *WSConn) messageLoop(closeHandler chan<- bool) {
+func (wsConn *WSConn) messageLoop() {
 	for {
-		logrus.Info("SPAM")
+		logrus.Info("Listening for message, isCaller: ", wsConn.isCaller)
 		msgType, msg, err := wsConn.conn.ReadMessage()
 
 		// set connected webrtc check
@@ -220,7 +217,7 @@ func (wsConn *WSConn) messageLoop(closeHandler chan<- bool) {
 			logrus.Error(err)
 			// remove connection from valid sessionDescriptions
 			if wsConn.isCaller {
-				logrus.Warn("caller disconnect")
+				logrus.Warn("caller websocket disconnect")
 
 				// check callerReady channel and reset if still open
 				if len(callerReady) > 0 {
@@ -251,12 +248,11 @@ func (wsConn *WSConn) messageLoop(closeHandler chan<- bool) {
 				chatroomCounter.Lock()
 				if chatroomCounter.callerStatus != callerSetStatus && chatroomCounter.receiverStatus != callerUnsetStatus {
 					// sending receiverDisconnect channel
-					// receiverDisconnect <- true
 				} else if chatroomCounter.callerStatus == callerSetStatus {
 					callerReady <- true
 				} else {
 					// @todo remove since its just for debugging
-					logrus.Info("Made it to else for receiver")
+					logrus.Warnf("Undefined caller status %s and receiverStatus %s, going to close connection", chatroomCounter.callerStatus, chatroomCounter.receiverStatus)
 				}
 				chatroomCounter.receiverStatus = callerUnsetStatus
 				chatroomCounter.Unlock()
@@ -277,7 +273,6 @@ func (wsConn *WSConn) messageLoop(closeHandler chan<- bool) {
 			logrus.Errorf("new count %d", chatroomCounter.wsCount)
 			chatroomCounter.Unlock()
 
-			closeHandler <- true
 			return
 		}
 
@@ -361,7 +356,6 @@ func (wsConn *WSConn) messageLoop(closeHandler chan<- bool) {
 				iceCandidatesReceiver.Unlock()
 			}
 		}
-
 	}
 }
 
@@ -378,7 +372,11 @@ func (wsConn *WSConn) initCaller() {
 		return
 	}
 
-	wsConn.conn.WriteMessage(websocket.TextMessage, initCallerJSON)
+	err = wsConn.conn.WriteMessage(websocket.TextMessage, initCallerJSON)
+	if err != nil {
+		logrus.Error(err)
+		return
+	}
 
 	chatroomCounter.Lock()
 	chatroomCounter.callerStatus = callerInitStatus
@@ -397,42 +395,52 @@ func (wsConn *WSConn) initReceiver() {
 	chatroomCounter.Unlock()
 
 	//@todo add switch to drop goroutine in case of caller reconnect
-	select {
-	case <-callerReady:
-		logrus.Info("callerReady channel received")
-	case <-callerDisconnect:
-		// @todo promote receiver to caller
-		logrus.Warn("Caller disconnected")
-		logrus.Info("Current receiverDisconnect len: ", len(receiverDisconnect))
+receiverLoop:
+	for {
+		select {
+		case <-callerReady:
+			logrus.Info("callerReady channel received")
+			break receiverLoop
+		case <-callerDisconnect:
+			// @todo promote receiver to caller
+			logrus.Warn("Caller disconnected")
+			logrus.Info("Current receiverDisconnect len: ", len(receiverDisconnect))
 
-		// chatroomCounter.Lock()
-		// chatroomCounter.receiverStatus = callerUnsetStatus
-		// chatroomCounter.Unlock()
+			chatroomCounter.Lock()
+			chatroomCounter.receiverStatus = callerUnsetStatus
+			chatroomCounter.Unlock()
 
-		// wsConn.initCaller()
+			// (*wsConn).initCaller()
+			logrus.Info("Initializing caller")
 
-		return
-	case <-receiverDisconnect:
-		// handle receiver disconnect when still waiting on session descriptions
-		logrus.Warn("Receiver disconnected")
-		return
-		// logrus.Info("Pinging client")
-		// err := wsConn.conn.WriteMessage(websocket.PingMessage, []byte{})
-		// if err != nil {
-		// 	logrus.Error(err)
-		// 	return
-		// }
+			initCallerMessage := wsMsg{
+				MsgType: wsMsgInitCaller,
+			}
 
-		// logrus.Info("ping sent")
+			initCallerJSON, err := json.Marshal(initCallerMessage)
+			if err != nil {
+				logrus.Error(err)
+				return
+			}
 
-		// <-receiverPong
-		// chatroomCounter.Lock()
-		// // if chatroomCounter.callerStatus == callerSetStatus {
-		// // 	logrus.Info("adding to callerReady trigger")
-		// // 	callerReady <- true
-		// // }
-		// chatroomCounter.receiverStatus = callerUnsetStatus
-		// chatroomCounter.Unlock()
+			wsConn.conn.WriteMessage(websocket.TextMessage, initCallerJSON)
+
+			chatroomCounter.Lock()
+			chatroomCounter.callerStatus = callerInitStatus
+			chatroomCounter.Unlock()
+
+			wsConn.isCaller = true
+
+			return
+		default:
+			// check receiver disconnect when still waiting on session descriptions
+			err := wsConn.conn.WriteMessage(websocket.PingMessage, []byte{})
+			if err != nil {
+				logrus.Error(err)
+				return
+			}
+			continue receiverLoop
+		}
 	}
 
 	logrus.Info("Sending caller info to reciever")
