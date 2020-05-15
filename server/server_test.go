@@ -44,9 +44,9 @@ func checkInitialServerStatus(t *testing.T) {
 		t.Fatalf("unexpected active connections, expect 0; have: %d", chatroomCounter.wsCount)
 	}
 
-	if chatroomCounter.callerStatus != callerUnsetStatus {
+	if chatroomCounter.callerStatus != unsetPeerStatus {
 		defer chatroomCounter.RUnlock()
-		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomCounter.callerStatus, callerInitStatus)
+		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomCounter.callerStatus, initPeerStatus)
 	}
 
 	chatroomCounter.RUnlock()
@@ -98,9 +98,9 @@ func firstWSConnection(t testing.T, wsUrl string) (ws websocket.Conn) {
 	}
 
 	chatroomCounter.RLock()
-	if chatroomCounter.callerStatus != callerInitStatus {
+	if chatroomCounter.callerStatus != initPeerStatus {
 		defer chatroomCounter.RUnlock()
-		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomCounter.callerStatus, callerInitStatus)
+		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomCounter.callerStatus, initPeerStatus)
 	}
 
 	chatroomCounter.RUnlock()
@@ -193,9 +193,9 @@ func testReconnectCaller(t *testing.T, server *httptest.Server) {
 		t.Fatalf("unexpected number of active connections, expect 0; have: %d", chatroomCounter.wsCount)
 	}
 
-	if chatroomCounter.callerStatus != callerUnsetStatus {
+	if chatroomCounter.callerStatus != unsetPeerStatus {
 		defer chatroomCounter.RUnlock()
-		t.Fatalf("unexpected callerStatus for first connection disconnect: %s; expected %s", chatroomCounter.callerStatus, callerInitStatus)
+		t.Fatalf("unexpected callerStatus for first connection disconnect: %s; expected %s", chatroomCounter.callerStatus, initPeerStatus)
 	}
 	chatroomCounter.RUnlock()
 
@@ -232,8 +232,8 @@ func testReconnectCaller(t *testing.T, server *httptest.Server) {
 		t.Fatalf("Unknown response message body: %s; expected: %s", msg1.MsgType, wsMsgInitCaller)
 	}
 
-	if chatroomCounter.callerStatus != callerInitStatus {
-		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomCounter.callerStatus, callerInitStatus)
+	if chatroomCounter.callerStatus != initPeerStatus {
+		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomCounter.callerStatus, initPeerStatus)
 	}
 }
 
@@ -274,9 +274,9 @@ func testReconnectCallee(t *testing.T, server *httptest.Server) {
 		t.Fatalf("unexpected active connections, expect 2; have: %d", chatroomCounter.wsCount)
 	}
 
-	if chatroomCounter.callerStatus != callerInitStatus {
+	if chatroomCounter.callerStatus != initPeerStatus {
 		defer chatroomCounter.RUnlock()
-		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomCounter.callerStatus, callerInitStatus)
+		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomCounter.callerStatus, initPeerStatus)
 	}
 	chatroomCounter.RUnlock()
 
@@ -291,9 +291,9 @@ func testReconnectCallee(t *testing.T, server *httptest.Server) {
 		t.Fatalf("unexpected active connections, expect 1; have: %d", chatroomCounter.wsCount)
 	}
 
-	if chatroomCounter.callerStatus != callerInitStatus {
+	if chatroomCounter.callerStatus != initPeerStatus {
 		defer chatroomCounter.RUnlock()
-		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomCounter.callerStatus, callerInitStatus)
+		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomCounter.callerStatus, initPeerStatus)
 	}
 	chatroomCounter.RUnlock()
 
@@ -315,8 +315,8 @@ func testReconnectCallee(t *testing.T, server *httptest.Server) {
 		t.Fatalf("unexpected active connections, expect 2; have: %d", chatroomCounter.wsCount)
 	}
 
-	if chatroomCounter.callerStatus != callerInitStatus {
-		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomCounter.callerStatus, callerInitStatus)
+	if chatroomCounter.callerStatus != initPeerStatus {
+		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomCounter.callerStatus, initPeerStatus)
 	}
 }
 
@@ -357,9 +357,9 @@ func testCalleeUpgradeToCaller(t *testing.T, server *httptest.Server) {
 		t.Fatalf("unexpected active connections, expect 2; have: %d", chatroomCounter.wsCount)
 	}
 
-	if chatroomCounter.callerStatus != callerInitStatus {
+	if chatroomCounter.callerStatus != initPeerStatus {
 		defer chatroomCounter.RUnlock()
-		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomCounter.callerStatus, callerInitStatus)
+		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomCounter.callerStatus, initPeerStatus)
 	}
 	chatroomCounter.RUnlock()
 
@@ -394,9 +394,9 @@ func testCalleeUpgradeToCaller(t *testing.T, server *httptest.Server) {
 		t.Fatalf("unexpected active connections, expect 1; have: %d", chatroomCounter.wsCount)
 	}
 
-	if chatroomCounter.callerStatus != callerInitStatus {
+	if chatroomCounter.callerStatus != initPeerStatus {
 		defer chatroomCounter.RUnlock()
-		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomCounter.callerStatus, callerInitStatus)
+		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomCounter.callerStatus, initPeerStatus)
 	}
 	chatroomCounter.RUnlock()
 
