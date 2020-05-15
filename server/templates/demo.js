@@ -17,8 +17,8 @@ var log = msg => {
 }
 
 function closeVideoCall() {
-  let remoteVideo = document.getElementById("received_video")
-  let localVideo = document.getElementById("local_video")
+  let remoteVideo = document.getElementById("remoteVideo")
+  let localVideo = document.getElementById("localVideo")
 
   if (remoteVideo.srcObject) {
     remoteVideo.srcObject.getTracks().forEach(track => track.stop());
@@ -33,13 +33,21 @@ function closeVideoCall() {
   remoteVideo.removeAttribute("src");
   remoteVideo.removeAttribute("srcObject");
   localVideo.removeAttribute("src");
-  remoteVideo.removeAttribute("srcObject");
+  localVideo.removeAttribute("srcObject");
+  
+  // Remote srcObject completely
+  remoteVideo.srcObject = null
 }
 
 pc.oniceconnectionstatechange = e => {
   log(pc.iceConnectionState)
 
   switch(pc.iceConnectionState) {
+    case "completed":
+      console.log("WebRTC connection completed closing WS")
+      // When WebRTC has been fully established close the WS connection
+      WS.close()
+      break
     case "disconnected":
     case "closed":
     case "failed":
@@ -80,8 +88,8 @@ window.initCaller = () => {
   navigator.mediaDevices.getUserMedia({ video: true, audio: true })
   .then(stream => {
     stream.getTracks().forEach(track => pc.addTrack(track, stream))
-    document.getElementById("localVideos").srcObject = stream
-    document.getElementById("localVideos").autoplay = true
+    document.getElementById("localVideo").srcObject = stream
+    document.getElementById("localVideo").autoplay = true
   }).catch(log)
 }
 
@@ -93,12 +101,15 @@ window.incomingICEcandidate = (msg) => {
 
 pc.ontrack = function (event) {
   console.log("in ontrack event")
-  if (document.getElementById('remoteVideos').srcObject) {
-    document.getElementById('remoteVideos').srcObject.addTrack(event.track)
+  if (document.getElementById('remoteVideo').srcObject) {
+    document.getElementById('remoteVideo').srcObject.addTrack(event.track)
     return
   }
-  document.getElementById('remoteVideos').srcObject = event.streams[0]
-  document.getElementById('remoteVideos').autoplay = true
+  document.getElementById('remoteVideo').srcObject = event.streams[0]
+  document.getElementById('remoteVideo').autoplay = true
+
+  // after WebRTC connection is established close websocket connection
+  // WS.close()
 }
 
 WS.onmessage = function(event) {
@@ -114,7 +125,7 @@ WS.onmessage = function(event) {
       document.getElementById('remoteSessionDescription').value = data.data
       initReceiver()
       break
-    case "ReceiverSessionDesc":
+    case "CalleeSessionDesc":
       console.log("received ReceiverSessionDesc")
       remoteSDP = JSON.parse(atob(data.data))
       pc.setRemoteDescription(remoteSDP)
@@ -141,8 +152,8 @@ window.initReceiver = () => {
     return navigator.mediaDevices.getUserMedia({ video: true, audio: true })
   })
   .then(function(stream){
-    document.getElementById("localVideos").srcObject = stream
-    document.getElementById("localVideos").autoplay = true
+    document.getElementById("localVideo").srcObject = stream
+    document.getElementById("localVideo").autoplay = true
     stream.getTracks().forEach(track => pc.addTrack(track, stream))
   })
   .then(function() {
@@ -153,7 +164,7 @@ window.initReceiver = () => {
   })
   .then(function() {
     sessionDesc = btoa(JSON.stringify(pc.localDescription))
-    WS.send(JSON.stringify({type:"ReceiverSessionDesc", data: sessionDesc}))
+    WS.send(JSON.stringify({type:"CalleeSessionDesc", data: sessionDesc}))
   })
   .catch(log)
 }
