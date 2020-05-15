@@ -10,6 +10,4 @@ RUN go get github.com/stretchr/testify/require
 
 RUN go get -v -d ./...
 
-# RUN go install -v ./...
-
-CMD ls && go run cmd/main.go --address=:3000
+CMD go run cmd/main.go --address=:3000
