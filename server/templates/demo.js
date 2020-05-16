@@ -72,6 +72,15 @@ pc.onicecandidate = event => {
   }
 }
 
+pc.onicegatheringstatechange = event = function() {
+  // could also be checked onicecandidate if event.cadidate is null
+
+  console.log("ice gathering state: ", pc.iceGatheringState)
+  if (pc.iceGatheringState === "complete"){
+    WS.send(JSON.stringify({type:"gatherICECandidates", data: ""}))
+  }
+}
+
 pc.onnegotiationneeded = () => {
   console.log("in onnegotiationneeded")
   pc.createOffer().then(offer => pc.setLocalDescription(offer))
