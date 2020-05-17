@@ -2,7 +2,6 @@ package videocaller
 
 import (
 	"encoding/json"
-	"fmt"
 	"html/template"
 	"net/http"
 	"sync"
@@ -30,12 +29,6 @@ type connCreds struct {
 }
 
 var connRegister = connectionsRegister{}
-
-// wsMsg is used for handling websocket json messages
-type wsMsg struct {
-	MsgType string `json:"type"`
-	Data    string `json:"data"`
-}
 
 // PeerStatus is an enum for Caller and Callee connection status
 type PeerStatus string
@@ -68,11 +61,22 @@ const wsMsgInitCaller = "InitCaller"
 const wsMsgCallerSessionDesc = "CallerSessionDesc"
 const wsMsgCalleeSessionDesc = "CalleeSessionDesc"
 const wsMsgICECandidate = "ICECandidate"
+const wsMsgGatherICECandidates = "gatherICECandidates"
 
-var wsMessageTypes = [...]string{wsMsgInitCaller, wsMsgCallerSessionDesc, wsMsgCalleeSessionDesc, wsMsgICECandidate}
+var wsMessageTypes = [...]string{wsMsgInitCaller, wsMsgCallerSessionDesc, wsMsgCalleeSessionDesc, wsMsgICECandidate, wsMsgGatherICECandidates}
+
+type wsMessage struct {
+	data    []byte // marshalled websocket message data
+	msgType int    // websocket message type identifier
+}
+
+// wsMsg is used for handling websocket json messages
+type wsPayload struct {
+	MsgType string `json:"type"`
+	Data    string `json:"data"`
+}
 
 // set as  signed int in case of negative counter corner cases
-
 type wsCounter struct {
 	sync.RWMutex
 	wsCount      int
@@ -101,9 +105,13 @@ func (w *wsMsg) isValidIncomingType() (isValid bool) {
 
 // WSConn is used to serialize WSConn, and help storing sessionDescriptions
 type WSConn struct {
-	ID       uuid.UUID
-	conn     *websocket.Conn
-	isCaller bool
+	ID                   uuid.UUID
+	conn                 *websocket.Conn
+	isCaller             bool
+	isGatheringRemoteICE bool
+	hasRemoteSDP         bool
+	hasLocalSDP          bool
+
 }
 
 func init() {
@@ -206,13 +214,137 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	curWSConn.messageLoop()
+	readBuffer := make(chan wsMessage) 
+	writeBuffer := make(chan wsMessage)
+	closeHandler := make(chan bool, 1) // for exiting handler function
+
+	go curWSConn.readLoop(readBuffer, closeHandler)
+	go curWSConn.writeLoop(writeBuffer)
+
+	if curWSConn.isCaller {
+		curWSConn.initCaller(writeBuffer)
+	} else {
+		curWSConn.initCallee()
+	}
+	// curWSConn.messageLoop()
+
+	<- closeHandler
 
 	logrus.Info("exiting handler, isCaller: ", curWSConn.isCaller)
 }
 
+func (wsConn *WSConn) readLoop(messageBuffer chan<- wsMessage, closeHandler chan<- bool) {
+	for {
+		msgType, msg, err := wsConn.conn.ReadMessage()
+
+		if err != nil {
+			logrus.Errorf("Error in receive message: ", err)
+
+			if wsConn.isCaller {
+				logrus.Warn("caller websocket disconnect")
+
+				// check callerReady channel and reset if still open
+				if len(callerReady) > 0 {
+					<-callerReady
+				}
+
+				var wsCount int
+				chatroomCounter.Lock()
+				chatroomCounter.callerStatus = unsetPeerStatus
+
+				if chatroomCounter.wsCount > 1 {
+					wsCount = chatroomCounter.wsCount
+				}
+				chatroomCounter.Unlock()
+
+				if wsCount > 0 {
+					callerDisconnect <- true
+				}
+
+				// fluch ICE candidates on caller disconnect
+				iceCandidatesCaller.Lock()
+				iceCandidatesCaller.messages = [][]byte{}
+				iceCandidatesCaller.Unlock()
+
+			} else {
+				logrus.Warn("callee websocket disconnect")
+
+				chatroomCounter.Lock()
+				if chatroomCounter.callerStatus != setPeerStatus && chatroomCounter.calleeStatus != unsetPeerStatus {
+					// sending calleeDisconnect channel
+				} else if chatroomCounter.callerStatus == setPeerStatus {
+					callerReady <- true
+				} else {
+					logrus.Errorf("Undefined caller status %s and calleeStatus %s, going to close connection", chatroomCounter.callerStatus, chatroomCounter.calleeStatus)
+				}
+				chatroomCounter.calleeStatus = unsetPeerStatus
+				chatroomCounter.Unlock()
+
+				iceCandidatesCallee.Lock()
+				iceCandidatesCallee.messages = [][]byte{}
+				iceCandidatesCallee.Unlock()
+			}
+
+			connRegister.Lock()
+			delete(connRegister.sessionDescriptions, wsConn.ID)
+			connRegister.Unlock()
+
+			chatroomCounter.Lock()
+			logrus.Error("Removing wsCount")
+			chatroomCounter.wsCount--
+
+			logrus.Errorf("new count %d", chatroomCounter.wsCount)
+			chatroomCounter.Unlock()
+
+			closeHandler <- true
+
+			return
+		}
+
+		if msgType != websocket.TextMessage {
+			logrus.Errorf("Unknown gorilla websocket message type: %d", msgType)
+			return
+		}
+
+		var clientWSMessage wsMsg
+
+		if err := json.Unmarshal(msg, &clientWSMessage); err != nil {
+			logrus.Errorf("Unable to unmarshal incoming message: ", err)
+			continue
+		}
+
+		if !clientWSMessage.isValidIncomingType() {
+			logrus.Error("Undefined websocketMessageType: ", clientWSMessage.MsgType)
+			continue
+		}
+
+		if !clientWSMessage.isValidIncomingType() {
+			logrus.Errorf("Skipping, unexpected incoming messagetype: %s", clientWSMessage.MsgType)
+			continue
+		}
+
+		// @todo send to appropriate functions/channels
+	}
+}
+
+func (wsConn *WSConn) writeLoop(messageBuffer <-chan wsMessage) {
+	for {
+		message := <-messageBuffer
+		err := wsConn.conn.WriteMessage(message.msgType, messagePayload)
+		if err != nil {
+			logrus.Error("Unable to WriteMessage: ", err)
+		}
+	}
+}
+
+// @todo refactor to move to read and write loop
 func (wsConn *WSConn) messageLoop() {
 	for {
+		if wsConn.isGatheringRemoteICE && wsConn.hasLocalSDP {
+			callerReady <- true
+			wsConn.calleeICEBuffer()
+		}
+
 		logrus.Info("Listening for message, isCaller: ", wsConn.isCaller)
 		msgType, msg, err := wsConn.conn.ReadMessage()
 
@@ -313,8 +445,7 @@ func (wsConn *WSConn) messageLoop() {
 				chatroomCounter.Lock()
 				chatroomCounter.callerStatus = setPeerStatus
 				chatroomCounter.Unlock()
-				go calleeICEBuffer(wsConn.conn)
-				callerReady <- true
+				wsConn.hasLocalSDP = true
 			}
 		}
 		connRegister.Unlock()
@@ -343,11 +474,16 @@ func (wsConn *WSConn) messageLoop() {
 					sd.conn.WriteMessage(websocket.TextMessage, calleeSessionJSON)
 
 					calleeReady <- true
+					continue
 				}
 			}
 			connRegister.Unlock()
 		} else if clientWSMessage.MsgType == wsMsgICECandidate {
 			logrus.Info("Is caller ICE candidate: ", wsConn.isCaller)
+			logrus.Info("%s", clientWSMessage.Data)
+			if clientWSMessage.Data == "" {
+				logrus.Warn("empty data")
+			}
 			if wsConn.isCaller {
 				iceCandidatesCaller.Lock()
 				iceCandidatesCaller.messages = append(iceCandidatesCaller.messages, msg)
@@ -357,11 +493,14 @@ func (wsConn *WSConn) messageLoop() {
 				iceCandidatesCallee.messages = append(iceCandidatesCallee.messages, msg)
 				iceCandidatesCallee.Unlock()
 			}
+		} else if clientWSMessage.MsgType == wsMsgGatherICECandidates {
+			// prepare to read callee buffer
+			wsConn.isGatheringRemoteICE = true
 		}
 	}
 }
 
-func (wsConn *WSConn) initCaller() {
+func (wsConn *WSConn) initCaller(messageBuffer <-chan) {
 	logrus.Info("Initializing caller")
 
 	initCallerMessage := wsMsg{
@@ -374,10 +513,9 @@ func (wsConn *WSConn) initCaller() {
 		return
 	}
 
-	err = wsConn.conn.WriteMessage(websocket.TextMessage, initCallerJSON)
-	if err != nil {
-		logrus.Error(err)
-		return
+	messageBuffer <- wsMessage {
+		data: initCallerJSON,
+		msgType: websocket.TextMessage,
 	}
 
 	chatroomCounter.Lock()
@@ -423,6 +561,11 @@ calleeLoop:
 			if err != nil {
 				logrus.Error(err)
 				return
+			}
+
+			message := wsMessage{
+				msgType: websocket.TextMessage,
+				data:    initCallerJSON,
 			}
 
 			wsConn.conn.WriteMessage(websocket.TextMessage, initCallerJSON)
@@ -481,25 +624,32 @@ calleeLoop:
 		}
 	}
 	iceCandidatesCaller.Unlock()
+
 	return
 }
 
 // @todo refactor (duplicated with iceCandidatesCaller)
-func calleeICEBuffer(wsConn *websocket.Conn) {
+func (wsConn *WSConn) calleeICEBuffer() {
 	logrus.Info("receiveICEBuffer ready")
 
 	<-calleeReady
 
 	logrus.Info("received callee Session description")
-
+	iceCandidatesCallee.Lock()
 	for {
-		iceCandidatesCallee.Lock()
 		if len(iceCandidatesCallee.messages) > 0 {
 			logrus.Info("Sending callee ICE candidate")
-			fmt.Println(string(iceCandidatesCallee.messages[0]))
-			wsConn.WriteMessage(websocket.TextMessage, iceCandidatesCallee.messages[0])
+			err := wsConn.conn.WriteMessage(websocket.TextMessage, iceCandidatesCallee.messages[0])
+			if err != nil {
+				logrus.Errorf("Error sending callee ICE candidates: %#v", err)
+				iceCandidatesCallee.Unlock()
+				return
+			}
 			iceCandidatesCallee.messages = iceCandidatesCallee.messages[1:]
+		} else {
+			break
 		}
-		iceCandidatesCallee.Unlock()
+
 	}
+	iceCandidatesCallee.Unlock()
 }
