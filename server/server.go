@@ -90,7 +90,7 @@ var maxConn = 2
 
 // isValidIncomingType validates if incoming wsMsg.MsgType has been defined
 // and should be accepted
-func (w *wsMsg) isValidIncomingType() (isValid bool) {
+func (w *wsPayload) isValidIncomingType() (isValid bool) {
 	for _, msgType := range wsMessageTypes {
 		// only server should send the InitCaller part
 		if w.MsgType == "InitCaller" {
@@ -201,17 +201,13 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 
 	chatroomCounter.Lock()
 	if connRegisterLen == 0 && chatroomCounter.callerStatus == unsetPeerStatus {
-		chatroomCounter.Unlock()
-		curWSConn.initCaller()
-	} else if connRegisterLen >= 0 && chatroomCounter.callerStatus != unsetPeerStatus {
-		chatroomCounter.Unlock()
-		// start goroutine in order and lsiten to possible disconnect
-		curWSConn.initCallee()
+		curWSConn.isCaller = true
 	} else {
 		chatroomCounter.Unlock()
 		logrus.Errorf("Unknown connection; callerStatus: %s; connRegisterLen: %d", chatroomCounter.callerStatus, connRegisterLen)
 		return
 	}
+	chatroomCounter.Unlock()
 
 	readBuffer := make(chan wsMessage)
 	writeBuffer := make(chan wsMessage)
@@ -222,8 +218,9 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 
 	if curWSConn.isCaller {
 		curWSConn.initCaller(writeBuffer)
+		curWSConn.calleeICEBuffer(writeBuffer)
 	} else {
-		curWSConn.initCallee()
+		curWSConn.initCallee(writeBuffer)
 	}
 	// curWSConn.messageLoop()
 
@@ -305,20 +302,20 @@ func (wsConn *WSConn) readLoop(messageBuffer chan<- wsMessage, closeHandler chan
 			return
 		}
 
-		var clientWSMessage wsMsg
+		var incomingWSMessage wsPayload
 
-		if err := json.Unmarshal(msg, &clientWSMessage); err != nil {
+		if err := json.Unmarshal(msg, &incomingWSMessage); err != nil {
 			logrus.Errorf("Unable to unmarshal incoming message: ", err)
 			continue
 		}
 
-		if !clientWSMessage.isValidIncomingType() {
-			logrus.Error("Undefined websocketMessageType: ", clientWSMessage.MsgType)
+		if !incomingWSMessage.isValidIncomingType() {
+			logrus.Error("Undefined websocketMessageType: ", incomingWSMessage.MsgType)
 			continue
 		}
 
-		if !clientWSMessage.isValidIncomingType() {
-			logrus.Errorf("Skipping, unexpected incoming messagetype: %s", clientWSMessage.MsgType)
+		if !incomingWSMessage.isValidIncomingType() {
+			logrus.Errorf("Skipping, unexpected incoming messagetype: %s", incomingWSMessage.MsgType)
 			continue
 		}
 
@@ -329,7 +326,7 @@ func (wsConn *WSConn) readLoop(messageBuffer chan<- wsMessage, closeHandler chan
 func (wsConn *WSConn) writeLoop(messageBuffer <-chan wsMessage) {
 	for {
 		message := <-messageBuffer
-		err := wsConn.conn.WriteMessage(message.msgType, messagePayload)
+		err := wsConn.conn.WriteMessage(message.msgType, message.data)
 		if err != nil {
 			logrus.Error("Unable to WriteMessage: ", err)
 		}
@@ -337,7 +334,7 @@ func (wsConn *WSConn) writeLoop(messageBuffer <-chan wsMessage) {
 }
 
 // @todo refactor to move to read and write loop
-func (wsConn *WSConn) messageLoop() {
+/*func (wsConn *WSConn) messageLoop() {
 	for {
 		if wsConn.isGatheringRemoteICE && wsConn.hasLocalSDP {
 			callerReady <- true
@@ -497,7 +494,7 @@ func (wsConn *WSConn) messageLoop() {
 			wsConn.isGatheringRemoteICE = true
 		}
 	}
-}
+}*/
 
 func (wsConn *WSConn) initCaller(messageBuffer chan<- wsMessage) {
 	logrus.Info("Initializing caller")
@@ -589,7 +586,7 @@ func (wsConn *WSConn) initCallee(messageBuffer chan<- wsMessage) {
 }
 
 // @todo refactor (duplicated with iceCandidatesCaller)
-func (wsConn *WSConn) calleeICEBuffer() {
+func (wsConn *WSConn) calleeICEBuffer(messageBuffer chan<- wsMessage) {
 	logrus.Info("receiveICEBuffer ready")
 
 	<-calleeReady
