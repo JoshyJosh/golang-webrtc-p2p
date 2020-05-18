@@ -1,13 +1,13 @@
 /* eslint-env browser */
 (function() {
 
-const WS = new WebSocket('ws://' + window.location.host + '/websocket')
+const WS = new WebSocket('ws://' + window.location.host + '/websocket') // could use wss://
 window.WS = WS
 
 window.pc = new RTCPeerConnection({
   iceServers: [
     {
-      urls: 'stun:stun.l.google.com:19302'
+      urls: 'stun:stun.l.google.com:19302' // can have local server instead if more control is needed
     }
   ]
 })
@@ -69,15 +69,6 @@ pc.onicecandidate = event => {
   if (event.candidate) {
     console.log(event.candidate)
     WS.send(JSON.stringify({type:"ICECandidate", data:btoa(JSON.stringify(event.candidate))}))
-  }
-}
-
-pc.onicegatheringstatechange = event = function() {
-  // could also be checked onicecandidate if event.cadidate is null
-
-  console.log("ice gathering state: ", pc.iceGatheringState)
-  if (pc.iceGatheringState === "complete"){
-    WS.send(JSON.stringify({type:"gatherICECandidates", data: ""}))
   }
 }
 
