@@ -1,7 +1,13 @@
-.PHONY: test startserver
+.PHONY: test testracy startserver
+TARGETS: test
+
+TESTBASE=go test videocaller --parallel=1 -v
 
 startserver: 
-	go run cmd/main.go --address=:3000
+	go run cmd/main.go --address=:3000 -timeout=30s
 
 test: 
-	go test videocaller --parallel=1 -timeout 30s -v 
+	$(TESTBASE)
+
+testracy: 
+	$(TESTBASE) -count=5 -race
