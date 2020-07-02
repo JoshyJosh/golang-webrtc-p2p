@@ -428,12 +428,12 @@ func TestUserConnections(t *testing.T) {
 
 	t.Run("testMaximumConnections", func(t *testing.T) {
 		testMaximumConnections(t, server)
-		// })
-		// t.Run("testReconnectCaller", func(t *testing.T) {
-		// 	testReconnectCaller(t, server)
-		// })
-		// t.Run("testReconnectCallee", func(t *testing.T) {
-		// 	testReconnectCallee(t, server)
+	})
+	t.Run("testReconnectCaller", func(t *testing.T) {
+		testReconnectCaller(t, server)
+	})
+	t.Run("testReconnectCallee", func(t *testing.T) {
+		testReconnectCallee(t, server)
 	})
 	// @todo need to refactor
 	// t.Run("testCalleeUpgradeToCaller", func(t *testing.T) {
