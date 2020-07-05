@@ -85,6 +85,8 @@ var chatroomStats = wsCounter{}
 
 var maxConn = 2
 
+var readTimeout = 10 * time.Second
+
 // isValidIncomingType validates if incoming wsMsg.MsgType has been defined
 // and should be accepted
 func (w *wsPayload) isValidIncomingType() (isValid bool) {
@@ -137,7 +139,7 @@ func StartServer(addr string) (err error) {
 }
 
 func indexPageHandler(w http.ResponseWriter, r *http.Request) {
-	logrus.Info("Got accessed")
+	logrus.Info("User entered index page")
 	if r.URL.Path == "/" {
 		temp := template.Must(template.ParseFiles("templates/template.html"))
 		data := struct{ Title string }{Title: "Client to client call"}
@@ -187,15 +189,6 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 	chatroomStats.wsCount++
 	chatroomStats.Unlock()
 
-	defer func() {
-		chatroomStats.Lock()
-		logrus.Error("Removing wsCount")
-		chatroomStats.wsCount--
-
-		logrus.Errorf("New connection count %d", chatroomStats.wsCount)
-		chatroomStats.Unlock()
-	}()
-
 	// register new user when conn has been upgraded
 	newUUID, err := uuid.NewUUID()
 	if err != nil {
@@ -214,6 +207,25 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	chatroomStats.Unlock()
+
+	defer func() {
+		chatroomStats.Lock()
+		logrus.Warn("Removing wsCount")
+		chatroomStats.wsCount--
+
+		logrus.Warnf("New connection count %d", chatroomStats.wsCount)
+		if curWSConn.isCaller {
+			logrus.Debug("Unsetting caller status")
+			chatroomStats.callerStatus = unsetPeerStatus
+
+			if chatroomStats.wsCount > 0 {
+				callerDisconnect <- true
+			}
+		} else {
+			chatroomStats.calleeStatus = unsetPeerStatus
+		}
+		chatroomStats.Unlock()
+	}()
 
 	var wg sync.WaitGroup
 
@@ -248,24 +260,14 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 		go curWSConn.callerICEBuffer(ctx, writeBuffer, closedConn, &wg)
 	}
 
-	// <-closeHandler
 	wg.Wait()
 
-	logrus.Infof("exiting handler, isCaller: %t", curWSConn.isCaller)
-	if curWSConn.isCaller {
-		chatroomStats.Lock()
-		chatroomStats.callerStatus = unsetPeerStatus
-		chatroomStats.Unlock()
-	}
-	// curWSConn.gracefulClose()
-
+	logrus.Infof("Exiting handler, isCaller: %t", curWSConn.isCaller)
 }
 
 func (wsConn *WSConn) readLoop(ctx context.Context, messageBuffer chan<- wsMessage, closedConn chan<- bool, wg *sync.WaitGroup) {
 	defer func() {
-		logrus.Info("In wg defer in readLoop")
-		// wsConn.conn.Close()
-		// closedConn <- true
+		logrus.Debug("In wg defer in readLoop")
 		wg.Done()
 	}()
 
@@ -274,21 +276,17 @@ func (wsConn *WSConn) readLoop(ctx context.Context, messageBuffer chan<- wsMessa
 
 	go func() {
 		<-ctx.Done()
-		logrus.Info("Client disconnected in readLoop")
+		logrus.Warn("Client disconnected in readLoop")
 		err := wsConn.conn.SetReadDeadline(time.Now())
 		if err != nil {
 			logrus.Error("Error in setting exiting deadline: ", err)
 		}
 		exitChan <- true
 	}()
-	// 	case <-closedConn:
-	// 		logrus.Info("Client disconnected")
-	// 		return
-	// 	}
-	// }()
+
 	go func() {
 		for {
-			err := wsConn.conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+			err := wsConn.conn.SetReadDeadline(time.Now().Add(readTimeout))
 			if err != nil {
 				logrus.Error("Could not SetReadDeadline: ", err)
 				closedConn <- true
@@ -326,11 +324,9 @@ func (wsConn *WSConn) readLoop(ctx context.Context, messageBuffer chan<- wsMessa
 			case wsMsgCallerSessionDesc, wsMsgCalleeSessionDesc:
 				if !wsConn.isCaller && incomingWSMessage.MsgType == wsMsgCallerSessionDesc {
 					log.Error("Unexpected SDP, received Caller SDP from Callee")
-					// closeHandler <- true
 					return
 				} else if wsConn.isCaller && incomingWSMessage.MsgType == wsMsgCalleeSessionDesc {
 					log.Error("Unexpected SDP, received Callee SDP from Caller")
-					// closeHandler <- true
 					return
 				}
 
@@ -349,7 +345,7 @@ func (wsConn *WSConn) readLoop(ctx context.Context, messageBuffer chan<- wsMessa
 			case wsMsgICECandidate:
 				logrus.Info("Is caller ICE candidate: ", wsConn.isCaller)
 				if incomingWSMessage.Data == "" {
-					logrus.Warn("empty data")
+					logrus.Warn("Empty caller ICE candidate data")
 				}
 				if wsConn.isCaller {
 					iceCandidatesCaller <- msg
@@ -365,7 +361,6 @@ func (wsConn *WSConn) readLoop(ctx context.Context, messageBuffer chan<- wsMessa
 func (wsConn *WSConn) writeLoop(ctx context.Context, messageBuffer <-chan wsMessage, closedConn chan bool, wg *sync.WaitGroup) {
 	defer func() {
 		logrus.Info("In wg defer in writeLoop")
-		// wsConn.conn.Close()
 		wg.Done()
 	}()
 
@@ -386,9 +381,6 @@ func (wsConn *WSConn) writeLoop(ctx context.Context, messageBuffer <-chan wsMess
 		case <-ctx.Done():
 			logrus.Info("Client disconnected in writeLoop")
 			return
-			// case <-closedConn:
-			// 	logrus.Info("closedConn on writeLoop")
-			// 	return
 		}
 	}
 }
@@ -399,7 +391,7 @@ func (wsConn *WSConn) initCaller(ctx context.Context, messageBuffer chan<- wsMes
 		wg.Done()
 	}()
 
-	logrus.Info("Initializing caller")
+	logrus.Info("Initializing Caller")
 
 	initCallerMessage := wsPayload{
 		MsgType: wsMsgInitCaller,
@@ -416,6 +408,7 @@ func (wsConn *WSConn) initCaller(ctx context.Context, messageBuffer chan<- wsMes
 		logrus.Info("Client disconnected in initCaller")
 		return
 	default:
+		logrus.Info("Sending initCallerJSON")
 		messageBuffer <- wsMessage{
 			data:    initCallerJSON,
 			msgType: websocket.TextMessage,
@@ -425,12 +418,12 @@ func (wsConn *WSConn) initCaller(ctx context.Context, messageBuffer chan<- wsMes
 		chatroomStats.callerStatus = initPeerStatus
 		chatroomStats.Unlock()
 
-		wsConn.isCaller = true
+		// wsConn.isCaller = true
 		return
 	}
 }
 
-func (wsConn *WSConn) initCallee(ctx context.Context, messageBuffer chan<- wsMessage, closedConn <-chan bool, wg *sync.WaitGroup) {
+func (wsConn *WSConn) initCallee(ctx context.Context, messageBuffer chan<- wsMessage, closedConn chan<- bool, wg *sync.WaitGroup) {
 	defer func() {
 		logrus.Info("In wg defer in initCallee")
 		wg.Done()
@@ -451,14 +444,16 @@ func (wsConn *WSConn) initCallee(ctx context.Context, messageBuffer chan<- wsMes
 			data:    callerSD,
 		}
 	case <-callerDisconnect:
-		// @todo promote callee to caller
 		logrus.Warn("Caller disconnected")
 
-		chatroomStats.Lock()
-		chatroomStats.calleeStatus = unsetPeerStatus
-		chatroomStats.Unlock()
+		// @todo promote callee to caller
+		// chatroomStats.Lock()
+		// chatroomStats.calleeStatus = unsetPeerStatus
+		// chatroomStats.Unlock()
 
-		// go wsConn.initCaller(ctx, messageBuffer, wg)
+		// wsConn.isCaller = true
+		// wg.Add(1)
+		// wsConn.initCaller(ctx, messageBuffer, closedConn, wg)
 
 		return
 	case <-ctx.Done():
@@ -466,81 +461,9 @@ func (wsConn *WSConn) initCallee(ctx context.Context, messageBuffer chan<- wsMes
 	}
 }
 
-// gracefulClose closes websocket connection, empties ICE buffers
-// and removesconnection from chatroomStats.wsCount
-func (wsConn *WSConn) gracefulClose() {
-	if wsConn.isCaller {
-		logrus.Warn("caller websocket disconnect")
-
-		// check callerReady channel and reset if still open
-		if len(callerReady) > 0 {
-			<-callerReady
-		}
-
-		var wsCount int
-		chatroomStats.Lock()
-		chatroomStats.callerStatus = unsetPeerStatus
-
-		if chatroomStats.wsCount > 1 {
-			wsCount = chatroomStats.wsCount
-		}
-		chatroomStats.Unlock()
-
-		if wsCount > 0 {
-			callerDisconnect <- true
-		}
-
-		// flush ICE candidates on caller disconnect
-		if len(iceCandidatesCaller) != 0 {
-			for len(iceCandidatesCaller) > 0 {
-				<-iceCandidatesCaller
-			}
-		}
-
-		// reset session descriptions on disconnect
-		callerSessionDescription = nil
-		if len(calleeSessionDescriptionChan) > 0 {
-			<-calleeSessionDescriptionChan
-		}
-	} else {
-		logrus.Warn("callee websocket disconnect")
-
-		chatroomStats.Lock()
-		if chatroomStats.callerStatus != setPeerStatus && chatroomStats.calleeStatus != unsetPeerStatus {
-			// sending calleeDisconnect channel
-		} else if chatroomStats.callerStatus == setPeerStatus {
-			callerReady <- true
-		} else {
-			logrus.Errorf("Undefined caller status %s and calleeStatus %s, going to close connection", chatroomStats.callerStatus, chatroomStats.calleeStatus)
-		}
-		chatroomStats.calleeStatus = unsetPeerStatus
-		chatroomStats.Unlock()
-
-		// flush ICE candidates on caller disconnect
-		if len(iceCandidatesCallee) != 0 {
-			for len(iceCandidatesCallee) > 0 {
-				<-iceCandidatesCallee
-			}
-		}
-
-		// reset session descriptions on disconnect
-		callerSessionDescription = nil
-		if len(calleeSessionDescriptionChan) > 0 {
-			<-calleeSessionDescriptionChan
-		}
-	}
-
-	chatroomStats.Lock()
-	logrus.Error("Removing wsCount")
-	chatroomStats.wsCount--
-
-	logrus.Errorf("New connection count %d", chatroomStats.wsCount)
-	chatroomStats.Unlock()
-}
-
 // @todo refactor (duplicated with iceCandidatesCaller)
 func (wsConn *WSConn) calleeICEBuffer(ctx context.Context, messageBuffer chan<- wsMessage, closedConn <-chan bool, wg *sync.WaitGroup) {
-	logrus.Info("Waiting for callee session description")
+	logrus.Debug("Waiting for callee session description")
 
 	defer func() {
 		logrus.Info("In wg defer in calleeICEBuffer")

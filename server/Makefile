@@ -7,7 +7,7 @@ startserver:
 	go run cmd/main.go --address=:3000 -timeout=30s
 
 test: 
-	$(TESTBASE)
+	$(TESTBASE) -count=1
 
 testracy: 
 	$(TESTBASE) -count=5 -race
