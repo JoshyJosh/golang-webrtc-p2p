@@ -201,12 +201,11 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 		conn: conn,
 	}
 
-	chatroomStats.Lock()
+	chatroomStats.RLock()
 	if chatroomStats.wsCount == 1 && chatroomStats.callerStatus == unsetPeerStatus {
 		curWSConn.isCaller = true
 	}
-
-	chatroomStats.Unlock()
+	chatroomStats.RUnlock()
 
 	defer func() {
 		chatroomStats.Lock()
