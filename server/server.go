@@ -124,10 +124,8 @@ func init() {
 	iceCandidatesCaller = make(chan []byte)
 
 	// set caller callee statuses to unset
-	chatroomStats.Lock()
 	chatroomStats.callerStatus = unsetPeerStatus
 	chatroomStats.calleeStatus = unsetPeerStatus
-	chatroomStats.Unlock()
 }
 
 func StartServer(addr string) (err error) {
@@ -270,7 +268,7 @@ func (wsConn *WSConn) readLoop(ctx context.Context, messageBuffer chan<- wsMessa
 		wg.Done()
 	}()
 
-	logrus.Info("In readLoop")
+	logrus.Debug("In readLoop")
 	exitChan := make(chan bool, 1)
 
 	go func() {
@@ -342,7 +340,7 @@ func (wsConn *WSConn) readLoop(ctx context.Context, messageBuffer chan<- wsMessa
 					calleeSessionDescriptionChan <- msg
 				}
 			case wsMsgICECandidate:
-				logrus.Info("Is caller ICE candidate: ", wsConn.isCaller)
+				logrus.Info("Received ICE candidate, wsConn.isCaller: ", wsConn.isCaller)
 				if incomingWSMessage.Data == "" {
 					logrus.Warn("Empty caller ICE candidate data")
 				}
@@ -363,7 +361,7 @@ func (wsConn *WSConn) writeLoop(ctx context.Context, messageBuffer <-chan wsMess
 		wg.Done()
 	}()
 
-	logrus.Info("In write loop")
+	logrus.Debug("In write loop")
 
 	for {
 		select {
