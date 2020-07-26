@@ -104,9 +104,11 @@ func (w *wsPayload) isValidIncomingType() (isValid bool) {
 
 // WSConn is used to serialize WSConn, and help storing sessionDescriptions
 type WSConn struct {
-	ID       uuid.UUID
-	conn     *websocket.Conn
-	isCaller bool
+	ID        uuid.UUID
+	conn      *websocket.Conn
+	isCaller  bool
+	reconnect bool
+	mux       sync.RWMutex
 }
 
 func init() {
@@ -183,10 +185,6 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 
 	logrus.Info("Added new WS connection")
 
-	chatroomStats.Lock()
-	chatroomStats.wsCount++
-	chatroomStats.Unlock()
-
 	// register new user when conn has been upgraded
 	newUUID, err := uuid.NewUUID()
 	if err != nil {
@@ -195,9 +193,25 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	curWSConn := WSConn{
-		ID:   newUUID,
-		conn: conn,
+		ID:        newUUID,
+		conn:      conn,
+		reconnect: true,
 	}
+
+	for curWSConn.reconnect {
+		curWSConn.mux.Lock()
+		curWSConn.reconnect = false
+		curWSConn.mux.Unlock()
+
+		chatroomStats.Lock()
+		chatroomStats.wsCount++
+		chatroomStats.Unlock()
+
+		curWSConn.startChannel(ctx, cancel)
+	}
+}
+
+func (curWSConn *WSConn) startChannel(ctx context.Context, cancel context.CancelFunc) {
 
 	chatroomStats.RLock()
 	if chatroomStats.wsCount == 1 && chatroomStats.callerStatus == unsetPeerStatus {
@@ -230,31 +244,42 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 	defer close(readBuffer)
 	writeBuffer := make(chan wsMessage, 10)
 	defer close(writeBuffer)
-	// // for exiting handler
+	// for exiting handler
 	closedConn := make(chan bool, 1)
 	defer close(closedConn)
+	closedWConn := make(chan bool, 1)
+	defer close(closedWConn)
+	closedInit := make(chan bool, 1)
+	defer close(closedInit)
+	closedICE := make(chan bool, 1)
+	defer close(closedICE)
 
 	// channel closure manager
 	go func() {
-		<-closedConn
+		select {
+		case <-closedConn:
+		case <-closedWConn:
+		case <-closedInit:
+		case <-closedICE:
+		}
 		cancel()
 	}()
 
 	wg.Add(1)
-	go curWSConn.writeLoop(ctx, writeBuffer, closedConn, &wg)
+	go curWSConn.writeLoop(ctx, writeBuffer, closedWConn, &wg)
 	wg.Add(1)
 	go curWSConn.readLoop(ctx, readBuffer, closedConn, &wg)
 
 	if curWSConn.isCaller {
 		wg.Add(1)
-		go curWSConn.initCaller(ctx, writeBuffer, closedConn, &wg)
+		go curWSConn.initCaller(ctx, writeBuffer, closedInit, &wg)
 		wg.Add(1)
-		go curWSConn.calleeICEBuffer(ctx, writeBuffer, closedConn, &wg)
+		go curWSConn.calleeICEBuffer(ctx, writeBuffer, closedICE, &wg)
 	} else {
 		wg.Add(1)
-		go curWSConn.initCallee(ctx, writeBuffer, closedConn, &wg)
+		go curWSConn.initCallee(ctx, writeBuffer, closedInit, &wg)
 		wg.Add(1)
-		go curWSConn.callerICEBuffer(ctx, writeBuffer, closedConn, &wg)
+		go curWSConn.callerICEBuffer(ctx, writeBuffer, closedICE, &wg)
 	}
 
 	wg.Wait()
@@ -262,7 +287,7 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 	logrus.Infof("Exiting handler, isCaller: %t", curWSConn.isCaller)
 }
 
-func (wsConn *WSConn) readLoop(ctx context.Context, messageBuffer chan<- wsMessage, closedConn chan<- bool, wg *sync.WaitGroup) {
+func (wsConn *WSConn) readLoop(ctx context.Context, messageBuffer chan<- wsMessage, closedConn chan bool, wg *sync.WaitGroup) {
 	defer func() {
 		logrus.Debug("In wg defer in readLoop")
 		wg.Done()
@@ -273,30 +298,29 @@ func (wsConn *WSConn) readLoop(ctx context.Context, messageBuffer chan<- wsMessa
 
 	go func() {
 		<-ctx.Done()
+
 		logrus.Warn("Client disconnected in readLoop")
 		err := wsConn.conn.SetReadDeadline(time.Now())
 		if err != nil {
 			logrus.Error("Error in setting exiting deadline: ", err)
 		}
-		exitChan <- true
+		close(exitChan)
 	}()
 
 	go func() {
 		for {
 			err := wsConn.conn.SetReadDeadline(time.Now().Add(readTimeout))
 			if err != nil {
-				logrus.Error("Could not SetReadDeadline: ", err)
-				closedConn <- true
-				return
+				logrus.Error("Could not SetReadDeadline: ", err, wsConn.reconnect)
+				<-exitChan
+				break
 			}
 
 			msgType, msg, err := wsConn.conn.ReadMessage()
 			if err != nil {
-				logrus.Error("Error in receive message: ", err)
-
-				closedConn <- true
-
-				return
+				logrus.Error("Error in receive message: ", err, wsConn.reconnect)
+				<-exitChan
+				break
 			}
 
 			if msgType != websocket.TextMessage {
@@ -350,6 +374,13 @@ func (wsConn *WSConn) readLoop(ctx context.Context, messageBuffer chan<- wsMessa
 					iceCandidatesCallee <- msg
 				}
 			}
+		}
+
+		select {
+		case <-exitChan:
+			return
+		default:
+			closedConn <- true
 		}
 	}()
 	<-exitChan
@@ -414,13 +445,11 @@ func (wsConn *WSConn) initCaller(ctx context.Context, messageBuffer chan<- wsMes
 		chatroomStats.Lock()
 		chatroomStats.callerStatus = initPeerStatus
 		chatroomStats.Unlock()
-
-		// wsConn.isCaller = true
 		return
 	}
 }
 
-func (wsConn *WSConn) initCallee(ctx context.Context, messageBuffer chan<- wsMessage, closedConn chan<- bool, wg *sync.WaitGroup) {
+func (wsConn *WSConn) initCallee(ctx context.Context, messageBuffer chan<- wsMessage, closedConn chan bool, wg *sync.WaitGroup) {
 	defer func() {
 		logrus.Info("In wg defer in initCallee")
 		wg.Done()
@@ -444,14 +473,15 @@ func (wsConn *WSConn) initCallee(ctx context.Context, messageBuffer chan<- wsMes
 		logrus.Warn("Caller disconnected")
 
 		// @todo promote callee to caller
-		// chatroomStats.Lock()
-		// chatroomStats.calleeStatus = unsetPeerStatus
-		// chatroomStats.Unlock()
+		chatroomStats.Lock()
+		chatroomStats.calleeStatus = "foo"
+		chatroomStats.Unlock()
 
-		// wsConn.isCaller = true
-		// wg.Add(1)
-		// wsConn.initCaller(ctx, messageBuffer, closedConn, wg)
+		wsConn.mux.Lock()
+		wsConn.reconnect = true
 
+		closedConn <- true
+		wsConn.mux.Unlock()
 		return
 	case <-ctx.Done():
 		return

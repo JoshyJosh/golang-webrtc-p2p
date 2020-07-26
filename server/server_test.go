@@ -361,6 +361,7 @@ func testCalleeUpgradeToCaller(t *testing.T, server *httptest.Server) {
 	}
 	chatroomStats.RUnlock()
 
+	time.Sleep(500 * time.Millisecond)
 	ws1.Close()
 
 	// sleep for server to recognize websocket disconnect
@@ -439,7 +440,7 @@ func TestUserConnections(t *testing.T) {
 		testReconnectCallee(t, server)
 	})
 	// @todo implement callee upgrade to caller
-	// t.Run("testCalleeUpgradeToCaller", func(t *testing.T) {
-	// 	testCalleeUpgradeToCaller(t, server)
-	// })
+	t.Run("testCalleeUpgradeToCaller", func(t *testing.T) {
+		testCalleeUpgradeToCaller(t, server)
+	})
 }
