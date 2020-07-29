@@ -197,7 +197,7 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 		reconnect: true,
 	}
 
-	wsLogger := logrus.WithFields(logrus.Fields{"is_caller": curWSConn.isCaller})
+	wsLogger := logrus.WithFields(logrus.Fields{"is_caller": curWSConn.isCaller, "uuid": curWSConn.ID})
 
 	chatroomStats.Lock()
 	chatroomStats.wsCount++
@@ -212,12 +212,12 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	chatroomStats.Lock()
-	logrus.Warn("Removing wsCount")
+	wsLogger.Warn("Removing wsCount")
 	chatroomStats.wsCount--
 
-	logrus.Warnf("New connection count %d", chatroomStats.wsCount)
+	wsLogger.Warnf("New connection count %d", chatroomStats.wsCount)
 	if curWSConn.isCaller {
-		logrus.Debug("Unsetting caller status")
+		wsLogger.Debug("Unsetting caller status")
 		chatroomStats.callerStatus = unsetPeerStatus
 
 		if chatroomStats.wsCount > 0 {
@@ -303,10 +303,10 @@ func (wsConn *WSConn) readLoop(ctx context.Context, messageBuffer chan<- wsMessa
 		<-ctx.Done()
 
 		log.Warn("Client disconnected in readLoop")
-		err := wsConn.conn.SetReadDeadline(time.Now())
-		if err != nil {
-			log.Error("Error in setting exiting deadline: ", err)
-		}
+		// err := wsConn.conn.SetReadDeadline(time.Now())
+		// if err != nil {
+		// 	log.Error("Error in setting exiting deadline: ", err)
+		// }
 		close(exitChan)
 	}()
 

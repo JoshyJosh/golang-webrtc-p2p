@@ -409,7 +409,7 @@ func testCalleeUpgradeToCaller(t *testing.T, server *httptest.Server) {
 	}
 
 	// sleep for counter update
-	time.Sleep(500 * time.Millisecond)
+	// /* time.Sleep(500 * time.Millisecond) */
 
 	chatroomStats.RLock()
 	defer chatroomStats.RUnlock()
