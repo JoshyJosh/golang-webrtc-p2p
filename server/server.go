@@ -57,10 +57,9 @@ const wsMsgInitCaller = "InitCaller"
 const wsMsgCallerSessionDesc = "CallerSessionDesc"
 const wsMsgCalleeSessionDesc = "CalleeSessionDesc"
 const wsMsgICECandidate = "ICECandidate"
-const wsMsgGatherICECandidates = "gatherICECandidates"
 const wsMsgUpgradeToCallerStatus = "UpgradeToCaller"
 
-var wsMessageTypes = [...]string{wsMsgInitCaller, wsMsgCallerSessionDesc, wsMsgCalleeSessionDesc, wsMsgICECandidate, wsMsgGatherICECandidates, wsMsgUpgradeToCallerStatus}
+var wsMessageTypes = [...]string{wsMsgInitCaller, wsMsgCallerSessionDesc, wsMsgCalleeSessionDesc, wsMsgICECandidate, wsMsgUpgradeToCallerStatus}
 
 type wsMessage struct {
 	data    []byte // marshalled websocket message data
@@ -154,7 +153,7 @@ func indexPageHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func pongHandler(pong string) (err error) {
-	logrus.Info("pong received")
+	logrus.Info("Pong received")
 	calleePong <- true
 	return
 }
@@ -198,7 +197,7 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 		reconnect: true,
 	}
 
-	wsLogger := logrus.WithFields(logrus.Fields{"is_caller": curWSConn.isCaller, "uuid": curWSConn.ID})
+	wsLogger := logrus.WithFields(logrus.Fields{"isCaller": curWSConn.isCaller, "uuid": curWSConn.ID})
 
 	chatroomStats.Lock()
 	chatroomStats.wsCount++
@@ -232,11 +231,10 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 }
 
 func (curWSConn *WSConn) startChannel(ctx context.Context, log *logrus.Entry) {
-
 	ctx2, cancel := context.WithCancel(context.Background())
-	log.Debug("Called startChannel ", chatroomStats.callerStatus)
 
 	chatroomStats.RLock()
+	log.Debug("Called startChannel ", chatroomStats.callerStatus)
 	if chatroomStats.wsCount == 1 && chatroomStats.callerStatus == unsetPeerStatus {
 		log.Info("Setting to isCaller")
 		curWSConn.isCaller = true
@@ -291,7 +289,7 @@ func (curWSConn *WSConn) startChannel(ctx context.Context, log *logrus.Entry) {
 
 	wg.Wait()
 
-	log.Infof("Exiting handler")
+	log.Info("Exiting handler")
 }
 
 func (wsConn *WSConn) readLoop(ctx context.Context, messageBuffer chan<- wsMessage, closedConn chan bool, log *logrus.Entry, wg *sync.WaitGroup) {
@@ -301,94 +299,80 @@ func (wsConn *WSConn) readLoop(ctx context.Context, messageBuffer chan<- wsMessa
 	}()
 
 	log.Debug("In readLoop")
-	exitChan := make(chan bool, 1)
 
-	go func() {
-		<-ctx.Done()
+readLoop:
+	for {
+		err := wsConn.conn.SetReadDeadline(time.Now().Add(readTimeout))
+		if err != nil {
+			log.Error("Could not SetReadDeadline: ", err, wsConn.reconnect)
+			break
+		}
 
-		log.Warn("Client disconnected in readLoop")
-		close(exitChan)
-	}()
+		msgType, msg, err := wsConn.conn.ReadMessage()
+		if err != nil {
+			log.Error("Error in receive message: ", err, wsConn.reconnect)
+			break
+		}
 
-	go func() {
-	readLoop:
-		for {
-			err := wsConn.conn.SetReadDeadline(time.Now().Add(readTimeout))
-			if err != nil {
-				log.Error("Could not SetReadDeadline: ", err, wsConn.reconnect)
-				break
-			}
+		if msgType != websocket.TextMessage {
+			log.Errorf("Unknown gorilla websocket message type: %d", msgType)
+			return
+		}
 
-			msgType, msg, err := wsConn.conn.ReadMessage()
-			if err != nil {
-				log.Error("Error in receive message: ", err, wsConn.reconnect)
-				break
-			}
+		var incomingWSMessage wsPayload
 
-			if msgType != websocket.TextMessage {
-				log.Errorf("Unknown gorilla websocket message type: %d", msgType)
+		if err = json.Unmarshal(msg, &incomingWSMessage); err != nil {
+			log.Error("Unable to unmarshal incoming message: ", err)
+			continue
+		}
+
+		if !incomingWSMessage.isValidIncomingType() {
+			log.Error("Undefined websocketMessageType: ", incomingWSMessage.MsgType)
+			continue
+		}
+
+		// @todo send to appropriate functions/channels
+		switch incomingWSMessage.MsgType {
+		case wsMsgUpgradeToCallerStatus:
+			log.Info("Upgrading to Caller")
+			break readLoop
+		case wsMsgCallerSessionDesc, wsMsgCalleeSessionDesc:
+			if !wsConn.isCaller && incomingWSMessage.MsgType == wsMsgCallerSessionDesc {
+				log.Error("Unexpected SDP, received Caller SDP from Callee")
+				return
+			} else if wsConn.isCaller && incomingWSMessage.MsgType == wsMsgCalleeSessionDesc {
+				log.Error("Unexpected SDP, received Callee SDP from Caller")
 				return
 			}
 
-			var incomingWSMessage wsPayload
-
-			if err = json.Unmarshal(msg, &incomingWSMessage); err != nil {
-				log.Error("Unable to unmarshal incoming message: ", err)
-				continue
+			if wsConn.isCaller {
+				chatroomStats.Lock()
+				chatroomStats.callerStatus = setPeerStatus
+				chatroomStats.Unlock()
+				callerReady <- true
+				// in case of dropout backup the message
+				callerSessionDescription = msg
+				callerSessionDescriptionChan <- msg
+			} else {
+				calleeSessionDescription = msg
+				calleeSessionDescriptionChan <- msg
 			}
-
-			if !incomingWSMessage.isValidIncomingType() {
-				log.Error("Undefined websocketMessageType: ", incomingWSMessage.MsgType)
-				continue
+		case wsMsgICECandidate:
+			log.Info("Received ICE candidate")
+			if incomingWSMessage.Data == "" {
+				log.Warn("Empty caller ICE candidate data")
 			}
-
-			// @todo send to appropriate functions/channels
-			switch incomingWSMessage.MsgType {
-			case wsMsgUpgradeToCallerStatus:
-				log.Info("Upgrading to Caller")
-				break readLoop
-			case wsMsgCallerSessionDesc, wsMsgCalleeSessionDesc:
-				if !wsConn.isCaller && incomingWSMessage.MsgType == wsMsgCallerSessionDesc {
-					log.Error("Unexpected SDP, received Caller SDP from Callee")
-					return
-				} else if wsConn.isCaller && incomingWSMessage.MsgType == wsMsgCalleeSessionDesc {
-					log.Error("Unexpected SDP, received Callee SDP from Caller")
-					return
-				}
-
-				if wsConn.isCaller {
-					chatroomStats.Lock()
-					chatroomStats.callerStatus = setPeerStatus
-					chatroomStats.Unlock()
-					callerReady <- true
-					// in case of dropout backup the message
-					callerSessionDescription = msg
-					callerSessionDescriptionChan <- msg
-				} else {
-					calleeSessionDescription = msg
-					calleeSessionDescriptionChan <- msg
-				}
-			case wsMsgICECandidate:
-				log.Info("Received ICE candidate")
-				if incomingWSMessage.Data == "" {
-					log.Warn("Empty caller ICE candidate data")
-				}
-				if wsConn.isCaller {
-					iceCandidatesCaller <- msg
-				} else {
-					iceCandidatesCallee <- msg
-				}
+			if wsConn.isCaller {
+				iceCandidatesCaller <- msg
+			} else {
+				iceCandidatesCallee <- msg
 			}
 		}
+	}
 
-		select {
-		case <-exitChan:
-			return
-		default:
-			closedConn <- true
-		}
-	}()
-	<-exitChan
+	closedConn <- true
+
+	<-ctx.Done()
 }
 
 func (wsConn *WSConn) writeLoop(ctx context.Context, messageBuffer <-chan wsMessage, closedConn chan bool, log *logrus.Entry, wg *sync.WaitGroup) {
@@ -480,11 +464,11 @@ func (wsConn *WSConn) initCallee(ctx context.Context, messageBuffer chan<- wsMes
 		// @todo promote callee to caller
 		chatroomStats.Lock()
 		chatroomStats.calleeStatus = unsetPeerStatus
-		log.Warn("Callerstilldisconnected ", chatroomStats.callerStatus)
 		chatroomStats.Unlock()
 
 		wsConn.mux.Lock()
 		wsConn.reconnect = true
+		wsConn.mux.Unlock()
 
 		upgradeToCallerMessage := wsPayload{
 			MsgType: wsMsgUpgradeToCallerStatus,
@@ -500,14 +484,13 @@ func (wsConn *WSConn) initCallee(ctx context.Context, messageBuffer chan<- wsMes
 			msgType: websocket.TextMessage,
 			data:    upgradeToCallerJSON,
 		}
-		wsConn.mux.Unlock()
+
 		return
 	case <-ctx.Done():
 		return
 	}
 }
 
-// @todo refactor (duplicated with iceCandidatesCaller)
 func (wsConn *WSConn) calleeICEBuffer(ctx context.Context, messageBuffer chan<- wsMessage, closedConn <-chan bool, log *logrus.Entry, wg *sync.WaitGroup) {
 	log.Debug("Waiting for callee session description")
 
@@ -546,7 +529,6 @@ func (wsConn *WSConn) calleeICEBuffer(ctx context.Context, messageBuffer chan<- 
 	}
 }
 
-// @todo refactor (duplicated with iceCandidatesCaller)
 func (wsConn *WSConn) callerICEBuffer(ctx context.Context, messageBuffer chan<- wsMessage, closedConn <-chan bool, log *logrus.Entry, wg *sync.WaitGroup) {
 	defer func() {
 		log.Info("In wg defer in callerICEBuffer")
