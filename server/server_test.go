@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/prometheus/common/log"
 	"github.com/sirupsen/logrus"
 )
 
@@ -378,14 +379,31 @@ func testCalleeUpgradeToCaller(t *testing.T, server *httptest.Server) {
 		t.Fatalf("unknown response message type: %d", msgType)
 	}
 
-	msg1 := wsPayload{}
-	if err = json.Unmarshal(msgBody, &msg1); err != nil {
+	var incomingWSMessage wsPayload
+
+	if err = json.Unmarshal(msgBody, &incomingWSMessage); err != nil {
+		t.Fatal("Unable to unmarshal incoming message: ", err)
+	}
+
+	if incomingWSMessage.MsgType != wsMsgUpgradeToCallerStatus {
+		t.Fatalf("unknown response message body: %s; expected: %s", incomingWSMessage, wsMsgInitCaller)
+	}
+
+	updateToCallerMsg := wsPayload{
+		MsgType: wsMsgUpgradeToCallerStatus,
+	}
+
+	updateToCallerJSON, err := json.Marshal(updateToCallerMsg)
+	if err != nil {
+		log.Error(err)
+		return
+	}
+
+	if err = ws2.WriteMessage(websocket.TextMessage, updateToCallerJSON); err != nil {
 		t.Fatal(err)
 	}
 
-	if msg1.MsgType != wsMsgInitCaller {
-		t.Fatalf("unknown response message body: %s; expected: %s", msg1.MsgType, wsMsgInitCaller)
-	}
+	time.Sleep(500 * time.Millisecond)
 
 	chatroomStats.RLock()
 	if chatroomStats.wsCount != 1 {
@@ -409,7 +427,7 @@ func testCalleeUpgradeToCaller(t *testing.T, server *httptest.Server) {
 	}
 
 	// sleep for counter update
-	// /* time.Sleep(500 * time.Millisecond) */
+	time.Sleep(500 * time.Millisecond)
 
 	chatroomStats.RLock()
 	defer chatroomStats.RUnlock()

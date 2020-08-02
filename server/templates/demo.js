@@ -136,6 +136,10 @@ WS.onmessage = function(event) {
       var candidateMessage = JSON.parse(atob(data.data))
       incomingICEcandidate(candidateMessage)
       break
+    case "UpgradeToCaller":
+        console.log("Upgrating to Caller")
+        WS.send(JSON.stringify({type:"UpgradeToCaller", data:sessionDesc}))
+        break
     default:
       alert("invalid session description type: ", data.type)
   }

@@ -58,8 +58,9 @@ const wsMsgCallerSessionDesc = "CallerSessionDesc"
 const wsMsgCalleeSessionDesc = "CalleeSessionDesc"
 const wsMsgICECandidate = "ICECandidate"
 const wsMsgGatherICECandidates = "gatherICECandidates"
+const wsMsgUpgradeToCallerStatus = "UpgradeToCaller"
 
-var wsMessageTypes = [...]string{wsMsgInitCaller, wsMsgCallerSessionDesc, wsMsgCalleeSessionDesc, wsMsgICECandidate, wsMsgGatherICECandidates}
+var wsMessageTypes = [...]string{wsMsgInitCaller, wsMsgCallerSessionDesc, wsMsgCalleeSessionDesc, wsMsgICECandidate, wsMsgGatherICECandidates, wsMsgUpgradeToCallerStatus}
 
 type wsMessage struct {
 	data    []byte // marshalled websocket message data
@@ -224,6 +225,7 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 			callerDisconnect <- true
 		}
 	} else {
+		wsLogger.Debug("Unsetting callee status")
 		chatroomStats.calleeStatus = unsetPeerStatus
 	}
 	chatroomStats.Unlock()
@@ -232,9 +234,11 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 func (curWSConn *WSConn) startChannel(ctx context.Context, log *logrus.Entry) {
 
 	ctx2, cancel := context.WithCancel(context.Background())
+	log.Debug("Called startChannel ", chatroomStats.callerStatus)
 
 	chatroomStats.RLock()
 	if chatroomStats.wsCount == 1 && chatroomStats.callerStatus == unsetPeerStatus {
+		log.Info("Setting to isCaller")
 		curWSConn.isCaller = true
 	}
 	chatroomStats.RUnlock()
@@ -303,14 +307,11 @@ func (wsConn *WSConn) readLoop(ctx context.Context, messageBuffer chan<- wsMessa
 		<-ctx.Done()
 
 		log.Warn("Client disconnected in readLoop")
-		// err := wsConn.conn.SetReadDeadline(time.Now())
-		// if err != nil {
-		// 	log.Error("Error in setting exiting deadline: ", err)
-		// }
 		close(exitChan)
 	}()
 
 	go func() {
+	readLoop:
 		for {
 			err := wsConn.conn.SetReadDeadline(time.Now().Add(readTimeout))
 			if err != nil {
@@ -331,7 +332,7 @@ func (wsConn *WSConn) readLoop(ctx context.Context, messageBuffer chan<- wsMessa
 
 			var incomingWSMessage wsPayload
 
-			if err := json.Unmarshal(msg, &incomingWSMessage); err != nil {
+			if err = json.Unmarshal(msg, &incomingWSMessage); err != nil {
 				log.Error("Unable to unmarshal incoming message: ", err)
 				continue
 			}
@@ -343,6 +344,9 @@ func (wsConn *WSConn) readLoop(ctx context.Context, messageBuffer chan<- wsMessa
 
 			// @todo send to appropriate functions/channels
 			switch incomingWSMessage.MsgType {
+			case wsMsgUpgradeToCallerStatus:
+				log.Info("Upgrading to Caller")
+				break readLoop
 			case wsMsgCallerSessionDesc, wsMsgCalleeSessionDesc:
 				if !wsConn.isCaller && incomingWSMessage.MsgType == wsMsgCallerSessionDesc {
 					log.Error("Unexpected SDP, received Caller SDP from Callee")
@@ -365,7 +369,7 @@ func (wsConn *WSConn) readLoop(ctx context.Context, messageBuffer chan<- wsMessa
 					calleeSessionDescriptionChan <- msg
 				}
 			case wsMsgICECandidate:
-				log.Info("Received ICE candidate, wsConn.isCaller: ", wsConn.isCaller)
+				log.Info("Received ICE candidate")
 				if incomingWSMessage.Data == "" {
 					log.Warn("Empty caller ICE candidate data")
 				}
@@ -476,12 +480,26 @@ func (wsConn *WSConn) initCallee(ctx context.Context, messageBuffer chan<- wsMes
 		// @todo promote callee to caller
 		chatroomStats.Lock()
 		chatroomStats.calleeStatus = unsetPeerStatus
+		log.Warn("Callerstilldisconnected ", chatroomStats.callerStatus)
 		chatroomStats.Unlock()
 
 		wsConn.mux.Lock()
 		wsConn.reconnect = true
 
-		closedConn <- true
+		upgradeToCallerMessage := wsPayload{
+			MsgType: wsMsgUpgradeToCallerStatus,
+		}
+
+		upgradeToCallerJSON, err := json.Marshal(upgradeToCallerMessage)
+		if err != nil {
+			log.Error(err)
+			return
+		}
+
+		messageBuffer <- wsMessage{
+			msgType: websocket.TextMessage,
+			data:    upgradeToCallerJSON,
+		}
 		wsConn.mux.Unlock()
 		return
 	case <-ctx.Done():
