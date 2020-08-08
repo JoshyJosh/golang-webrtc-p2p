@@ -29,7 +29,6 @@ const (
 
 var callerReady chan bool
 var callerDisconnect chan bool
-var calleeDisconnect chan bool
 var calleePong chan bool
 
 // Session description messages in case of client disconnects
@@ -39,15 +38,6 @@ var callerSessionDescription []byte
 // session description exchange channels
 var calleeSessionDescriptionChan chan []byte
 var callerSessionDescriptionChan chan []byte
-
-// @todo rename to keep it semantic
-// fore callees SDP
-var calleeReady chan bool
-
-type wsIceCandidates struct {
-	sync.RWMutex
-	messages [][]byte
-}
 
 var iceCandidatesCaller chan []byte
 var iceCandidatesCallee chan []byte
@@ -75,16 +65,16 @@ type wsPayload struct {
 // set as  signed int in case of negative counter corner cases
 type wsCounter struct {
 	sync.RWMutex
-	wsCount      int
+	wsCount      uint64
 	callerStatus PeerStatus
 	calleeStatus PeerStatus
 }
 
 var chatroomStats = wsCounter{}
 
-var maxConn = 2
+var maxConn uint64 = 2
 
-var readTimeout = 60 * time.Second
+var readTimeout = 10 * time.Second
 
 // isValidIncomingType validates if incoming wsMsg.MsgType has been defined
 // and should be accepted
@@ -113,7 +103,6 @@ type WSConn struct {
 func init() {
 	callerReady = make(chan bool, 1)
 	callerDisconnect = make(chan bool, 1)
-	calleeDisconnect = make(chan bool, 1)
 	calleePong = make(chan bool, 1)
 
 	// peer session description exchange
@@ -211,13 +200,14 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 		curWSConn.startChannel(ctx, wsLogger)
 	}
 
-	chatroomStats.Lock()
 	wsLogger.Warn("Removing wsCount")
+	chatroomStats.Lock()
 	chatroomStats.wsCount--
 
 	wsLogger.Warnf("New connection count %d", chatroomStats.wsCount)
 	if curWSConn.isCaller {
 		wsLogger.Debug("Unsetting caller status")
+
 		chatroomStats.callerStatus = unsetPeerStatus
 
 		if chatroomStats.wsCount > 0 {
@@ -267,7 +257,29 @@ func (curWSConn *WSConn) startChannel(ctx context.Context, log *logrus.Entry) {
 		case <-ctx.Done():
 		case <-ctx2.Done():
 		}
+
 		cancel()
+
+		// empty ICE nad SessionDescription channels
+		log.Info("Emptying ICE and SessionDescription channels")
+		curWSConn.mux.RLock()
+		if curWSConn.isCaller {
+			for len(iceCandidatesCaller) > 0 {
+				<-iceCandidatesCaller
+			}
+			for len(callerSessionDescriptionChan) > 0 {
+				<-callerSessionDescriptionChan
+			}
+		} else {
+			for len(iceCandidatesCallee) > 0 {
+				<-iceCandidatesCallee
+			}
+			for len(calleeSessionDescriptionChan) > 0 {
+				<-calleeSessionDescriptionChan
+			}
+		}
+		curWSConn.mux.RUnlock()
+		log.Info("Emptied ICE and SessionDescription channels")
 	}()
 
 	wg.Add(1)
@@ -310,7 +322,9 @@ readLoop:
 
 		msgType, msg, err := wsConn.conn.ReadMessage()
 		if err != nil {
+			wsConn.mux.RLock()
 			log.Error("Error in receive message: ", err, wsConn.reconnect)
+			wsConn.mux.RUnlock()
 			break
 		}
 
