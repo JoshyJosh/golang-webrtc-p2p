@@ -9,7 +9,7 @@ import (
 )
 
 func main() {
-	addr := flag.String("address", ":80", "Address to host the HTTP server on.")
+	addr := flag.String("port", ":80", "Port to host the HTTP server on.")
 	flag.Parse()
 
 	logrus.Println("Listening on", *addr)

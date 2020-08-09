@@ -3,8 +3,6 @@ module videocaller
 go 1.14
 
 require (
-	github.com/davecgh/go-spew v1.1.1
-	github.com/gofrs/uuid v3.3.0+incompatible
 	github.com/google/uuid v1.1.1
 	github.com/gorilla/websocket v1.4.2
 	github.com/prometheus/common v0.10.0

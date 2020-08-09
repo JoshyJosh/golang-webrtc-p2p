@@ -4,10 +4,6 @@ COPY . /app
 
 WORKDIR /app
 
-RUN export GOPATH=$GOPATH:/app
+RUN go mod tidy
 
-RUN go get github.com/stretchr/testify/require
-
-RUN go get -v -d ./...
-
-CMD go run cmd/main.go --address=:3000
+CMD go run cmd/main.go --port=:3000
