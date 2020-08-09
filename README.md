@@ -5,8 +5,8 @@ This is a project made to test out a simple webrtc program with a golang server 
 NOTE: This is currently a work in progress and a learning prototype overall. The server and needs to be manually restarted to create a new session once a disconnect has occured.
 
 To run the server go to `server` folder and: 
- - run `go run cmd/main.go` with optional `--address=:<port number>` flag *OR*
- - run `make` to run server on with flag `--address=:3000`
+ - run `go run cmd/main.go` with optional `--port=:<port number>` flag *OR*
+ - run `make` to run server on with flag `--port=:3000`
 
 Server can also be run via docker although it is currently automatically bound to port `3000`.
 
