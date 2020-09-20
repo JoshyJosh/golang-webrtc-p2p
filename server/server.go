@@ -48,8 +48,11 @@ const wsMsgCallerSessionDesc = "CallerSessionDesc"
 const wsMsgCalleeSessionDesc = "CalleeSessionDesc"
 const wsMsgICECandidate = "ICECandidate"
 const wsMsgUpgradeToCallerStatus = "UpgradeToCaller"
+const wsMsgStartHealthcheck = "healthCheck"
+const wsMsgPong = "pong"
+const wsMsgUUIDSync = "uuidSync"
 
-var wsMessageTypes = [...]string{wsMsgInitCaller, wsMsgCallerSessionDesc, wsMsgCalleeSessionDesc, wsMsgICECandidate, wsMsgUpgradeToCallerStatus}
+var wsMessageTypes = [...]string{wsMsgInitCaller, wsMsgCallerSessionDesc, wsMsgCalleeSessionDesc, wsMsgICECandidate, wsMsgUpgradeToCallerStatus, wsMsgPong, wsMsgStartHealthcheck, wsMsgUUIDSync}
 
 type wsMessage struct {
 	data    []byte // marshalled websocket message data
@@ -64,10 +67,10 @@ type wsPayload struct {
 
 // set as  signed int in case of negative counter corner cases
 type wsCounter struct {
-	sync.RWMutex
 	wsCount      uint64
 	callerStatus PeerStatus
 	calleeStatus PeerStatus
+	sync.RWMutex
 }
 
 var chatroomStats = wsCounter{}
@@ -93,12 +96,22 @@ func (w *wsPayload) isValidIncomingType() (isValid bool) {
 
 // WSConn is used to serialize WSConn, and help storing sessionDescriptions
 type WSConn struct {
-	ID        uuid.UUID
-	conn      *websocket.Conn
-	isCaller  bool
-	reconnect bool
-	mux       sync.RWMutex
+	ID          uuid.UUID
+	conn        *websocket.Conn
+	isCaller    bool
+	reconnect   bool
+	logger      *logrus.Entry
+	pingStop    chan struct{}
+	writeBuffer chan wsMessage
+	sync.RWMutex
 }
+
+type wsConnRoster struct {
+	wsConnMap map[uuid.UUID]*chan struct{}
+	sync.RWMutex
+}
+
+var wsConnR = wsConnRoster{}
 
 func init() {
 	callerReady = make(chan bool, 1)
@@ -110,18 +123,21 @@ func init() {
 	callerSessionDescriptionChan = make(chan []byte, 10)
 
 	// ice candidates exchange
-	iceCandidatesCallee = make(chan []byte, 30)
-	iceCandidatesCaller = make(chan []byte, 30)
+	iceCandidatesCallee = make(chan []byte, 50)
+	iceCandidatesCaller = make(chan []byte, 50)
 
 	// set caller callee statuses to unset
 	chatroomStats.callerStatus = unsetPeerStatus
 	chatroomStats.calleeStatus = unsetPeerStatus
+
+	wsConnR.wsConnMap = make(map[uuid.UUID]*chan struct{})
 }
 
 func StartServer(addr string) (err error) {
 
 	http.HandleFunc("/", indexPageHandler)
 	http.HandleFunc("/websocket", websocketHandler)
+	http.HandleFunc("/pingsocket", pingHandler)
 
 	return http.ListenAndServe(addr, nil)
 }
@@ -141,10 +157,106 @@ func indexPageHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func pongHandler(pong string) (err error) {
-	logrus.Info("Pong received")
-	calleePong <- true
-	return
+func pingHandler(w http.ResponseWriter, req *http.Request) {
+	ctx := req.Context()
+
+	logrus.Info("ping handler")
+
+	conn, err := upgrader.Upgrade(w, req, nil)
+	if err != nil {
+		logrus.Error(err)
+		return
+	}
+
+	defer conn.Close()
+
+	msgType, msg, err := conn.ReadMessage()
+	if err != nil {
+		logrus.Error("Error in ping message")
+		return
+	}
+
+	if msgType != websocket.TextMessage {
+		logrus.Errorf("Expected uuidSync message type got: %d", msgType)
+		return
+	}
+
+	var uuidMsg wsPayload
+	err = json.Unmarshal(msg, &uuidMsg)
+	if err != nil {
+		logrus.Error("Error in json unmarshal")
+		return
+	}
+
+	if uuidMsg.MsgType != wsMsgUUIDSync {
+		logrus.Errorf("Expected uuidSync message type got: %s", uuidMsg.MsgType)
+		return
+	}
+
+	var pingChan chan struct{}
+
+	tmpPingChan, ok := wsConnR.wsConnMap[uuid.MustParse(uuidMsg.Data)]
+	if !ok {
+		logrus.Error("Could not find ping channel")
+		return
+	}
+
+	pingChan = *tmpPingChan
+
+	// NOTE: pong handler gets blocked when trying to connect with initial websocket
+	// still stumped on why this happens
+	pingMessage := wsPayload{
+		MsgType: "ping",
+	}
+
+	pingJson, err := json.Marshal(pingMessage)
+	if err != nil {
+		logrus.Error(err)
+		return
+	}
+
+	pingBuffer := make(chan wsMessage, 10)
+	defer close(pingBuffer)
+
+	go func() {
+		for {
+			message := <-pingBuffer
+			err := conn.WriteMessage(message.msgType, message.data)
+			if err != nil {
+				logrus.Error("Unable to WriteMessage: ", err)
+
+				// consider the error to be a lost connection or corrupted buffer data
+				// close handler in case of this
+				break
+			}
+		}
+	}()
+
+	go func() {
+		for {
+			msgType, msg, err := conn.ReadMessage()
+			if err != nil {
+				logrus.Error("Error in ping message")
+				break
+			}
+
+			logrus.Debugf("%d %s", msgType, msg)
+		}
+	}()
+
+	defer func(pingChan chan struct{}) {
+		pingChan <- struct{}{}
+	}(pingChan)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			time.Sleep(2 * time.Second)
+			pingBuffer <- wsMessage{msgType: websocket.TextMessage, data: pingJson}
+		}
+	}
 }
 
 func websocketHandler(w http.ResponseWriter, req *http.Request) {
@@ -169,8 +281,6 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 
 	defer conn.Close()
 
-	conn.SetPongHandler(pongHandler)
-
 	logrus.Info("Added new WS connection")
 
 	// register new user when conn has been upgraded
@@ -184,9 +294,16 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 		ID:        newUUID,
 		conn:      conn,
 		reconnect: true,
+		pingStop:  make(chan struct{}, 1),
 	}
+	defer close(curWSConn.pingStop)
 
 	wsLogger := logrus.WithFields(logrus.Fields{"isCaller": curWSConn.isCaller, "uuid": curWSConn.ID})
+	curWSConn.logger = wsLogger
+
+	wsConnR.Lock()
+	wsConnR.wsConnMap[curWSConn.ID] = &curWSConn.pingStop
+	wsConnR.Unlock()
 
 	chatroomStats.Lock()
 	chatroomStats.wsCount++
@@ -210,9 +327,9 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 	}()
 
 	for curWSConn.reconnect {
-		curWSConn.mux.Lock()
+		curWSConn.Lock()
 		curWSConn.reconnect = false
-		curWSConn.mux.Unlock()
+		curWSConn.Unlock()
 
 		curWSConn.startChannel(ctx, wsLogger)
 	}
@@ -222,27 +339,27 @@ func (curWSConn *WSConn) startChannel(ctx context.Context, log *logrus.Entry) {
 	ctx2, cancel := context.WithCancel(context.Background())
 
 	chatroomStats.RLock()
-	log.Debugf("Called startChannel %s %d", chatroomStats.callerStatus, chatroomStats.wsCount)
+	logrus.Debugf("Called startChannel %s %d", chatroomStats.callerStatus, chatroomStats.wsCount)
 
 	if chatroomStats.wsCount == 1 && chatroomStats.callerStatus == unsetPeerStatus {
-		curWSConn.mux.Lock()
-		log.Info("Setting to isCaller")
+		curWSConn.Lock()
+		logrus.Info("Setting to isCaller")
 		curWSConn.isCaller = true
-		curWSConn.mux.Unlock()
+		curWSConn.Unlock()
 	}
 
-	curWSConn.mux.RLock()
+	curWSConn.RLock()
 	// update isCallerField
-	log = log.WithFields(logrus.Fields{"isCaller": curWSConn.isCaller})
-	curWSConn.mux.RUnlock()
+	log = logrus.WithFields(logrus.Fields{"isCaller": curWSConn.isCaller})
+	curWSConn.RUnlock()
 	chatroomStats.RUnlock()
 
 	var wg sync.WaitGroup
 
 	readBuffer := make(chan wsMessage, 10)
 	defer close(readBuffer)
-	writeBuffer := make(chan wsMessage, 10)
-	defer close(writeBuffer)
+	curWSConn.writeBuffer = make(chan wsMessage, 10)
+	defer close(curWSConn.writeBuffer)
 	// for exiting handler
 	closedConn := make(chan bool, 1)
 	defer close(closedConn)
@@ -256,19 +373,19 @@ func (curWSConn *WSConn) startChannel(ctx context.Context, log *logrus.Entry) {
 	// channel closure manager
 	go func() {
 		select {
+		case <-curWSConn.pingStop:
 		case <-closedConn:
 		case <-closedWConn:
 		case <-closedInit:
 		case <-closedICE:
 		case <-ctx.Done():
 		case <-ctx2.Done():
+		case <-callerDisconnect:
 		}
-
-		cancel()
 
 		// empty ICE nad SessionDescription channels
 		log.Info("Emptying ICE and SessionDescription channels")
-		curWSConn.mux.RLock()
+		curWSConn.RLock()
 		if curWSConn.isCaller {
 			for len(iceCandidatesCaller) > 0 {
 				<-iceCandidatesCaller
@@ -302,29 +419,51 @@ func (curWSConn *WSConn) startChannel(ctx context.Context, log *logrus.Entry) {
 			<-calleeSessionDescriptionChan
 		}
 
-		curWSConn.mux.RUnlock()
+		curWSConn.RUnlock()
+
+		cancel()
 	}()
+
+	curWSConn.uuidSync(ctx2, curWSConn.writeBuffer, log)
 
 	if curWSConn.isCaller {
 		wg.Add(1)
-		go curWSConn.initCaller(ctx2, writeBuffer, closedInit, log, &wg)
+		go curWSConn.initCaller(ctx2, curWSConn.writeBuffer, closedInit, log, &wg)
 		wg.Add(1)
-		go curWSConn.calleeICEBuffer(ctx2, writeBuffer, closedICE, log, &wg)
+		go curWSConn.calleeICEBuffer(ctx2, curWSConn.writeBuffer, closedICE, log, &wg)
 	} else {
 		wg.Add(1)
-		go curWSConn.initCallee(ctx2, writeBuffer, closedInit, log, &wg)
+		go curWSConn.initCallee(ctx2, curWSConn.writeBuffer, closedInit, log, &wg)
 		wg.Add(1)
-		go curWSConn.callerICEBuffer(ctx2, writeBuffer, closedICE, log, &wg)
+		go curWSConn.callerICEBuffer(ctx2, curWSConn.writeBuffer, closedICE, log, &wg)
 	}
 
 	wg.Add(1)
-	go curWSConn.writeLoop(ctx2, writeBuffer, closedWConn, log, &wg)
+	go curWSConn.writeLoop(ctx2, curWSConn.writeBuffer, closedWConn, log, &wg)
 	wg.Add(1)
 	go curWSConn.readLoop(ctx2, readBuffer, closedConn, log, &wg)
 
 	wg.Wait()
 
 	log.Info("Exiting handler")
+}
+
+func (wsConn *WSConn) uuidSync(ctx context.Context, messageBuffer chan<- wsMessage, log *logrus.Entry) {
+	uuidSyncMessage := wsPayload{
+		MsgType: wsMsgUUIDSync,
+		Data:    wsConn.ID.String(),
+	}
+
+	uuidSyncMessageJSON, err := json.Marshal(uuidSyncMessage)
+	if err != nil {
+		log.Error(err)
+		return
+	}
+
+	messageBuffer <- wsMessage{
+		msgType: websocket.TextMessage,
+		data:    uuidSyncMessageJSON,
+	}
 }
 
 // websocket read loop
@@ -338,17 +477,12 @@ func (wsConn *WSConn) readLoop(ctx context.Context, messageBuffer chan<- wsMessa
 
 readLoop:
 	for {
-		err := wsConn.conn.SetReadDeadline(time.Now().Add(readTimeout))
-		if err != nil {
-			log.Error("Could not SetReadDeadline: ", err, wsConn.reconnect)
-			break
-		}
-
+		log.Debug("Readloop")
 		msgType, msg, err := wsConn.conn.ReadMessage()
 		if err != nil {
-			wsConn.mux.RLock()
+			wsConn.RLock()
 			log.Error("Error in receive message: ", err, wsConn.reconnect)
-			wsConn.mux.RUnlock()
+			wsConn.RUnlock()
 			break
 		}
 
@@ -371,6 +505,9 @@ readLoop:
 
 		// @todo send to appropriate functions/channels
 		switch incomingWSMessage.MsgType {
+		case "pong":
+			log.Info("Got pong")
+			continue
 		case wsMsgUpgradeToCallerStatus:
 			log.Info("Upgrading to Caller")
 			break readLoop
@@ -498,34 +635,6 @@ func (wsConn *WSConn) initCallee(ctx context.Context, messageBuffer chan<- wsMes
 			msgType: websocket.TextMessage,
 			data:    callerSD,
 		}
-	case <-callerDisconnect:
-		log.Warn("Caller disconnected")
-
-		// @todo promote callee to caller
-		chatroomStats.Lock()
-		chatroomStats.calleeStatus = unsetPeerStatus
-		chatroomStats.Unlock()
-
-		wsConn.mux.Lock()
-		wsConn.reconnect = true
-		wsConn.mux.Unlock()
-
-		upgradeToCallerMessage := wsPayload{
-			MsgType: wsMsgUpgradeToCallerStatus,
-		}
-
-		upgradeToCallerJSON, err := json.Marshal(upgradeToCallerMessage)
-		if err != nil {
-			log.Error(err)
-			return
-		}
-
-		messageBuffer <- wsMessage{
-			msgType: websocket.TextMessage,
-			data:    upgradeToCallerJSON,
-		}
-
-		return
 	case <-ctx.Done():
 		return
 	}

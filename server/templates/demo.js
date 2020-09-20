@@ -1,8 +1,9 @@
 /* eslint-env browser */
 (function() {
 
-const WS = new WebSocket('ws://' + window.location.host + '/websocket') // could use wss://
-window.WS = WS
+window.WS2 = new WebSocket('ws://' + window.location.host + '/pingsocket') // could use wss://
+window.WS = new WebSocket('ws://' + window.location.host + '/websocket') // could use wss://
+// webrtc WS is no longer able to ping when establishing webrtc connection will use second websocket for healthcheck
 
 window.pc = new RTCPeerConnection({
   iceServers: [
@@ -21,19 +22,19 @@ function closeVideoCall() {
   let localVideo = document.getElementById("localVideo")
 
   if (remoteVideo.srcObject) {
-    remoteVideo.srcObject.getTracks().forEach(track => track.stop());
+    remoteVideo.srcObject.getTracks().forEach(track => track.stop())
   }
 
   if (localVideo.srcObject) {
-    localVideo.srcObject.getTracks().forEach(track => track.stop());
+    localVideo.srcObject.getTracks().forEach(track => track.stop())
   }
 
   pc.close()
 
-  remoteVideo.removeAttribute("src");
-  remoteVideo.removeAttribute("srcObject");
-  localVideo.removeAttribute("src");
-  localVideo.removeAttribute("srcObject");
+  remoteVideo.removeAttribute("src")
+  remoteVideo.removeAttribute("srcObject")
+  localVideo.removeAttribute("src")
+  localVideo.removeAttribute("srcObject")
   
   // Remote srcObject completely
   remoteVideo.srcObject = null
@@ -112,18 +113,37 @@ pc.ontrack = function (event) {
   // WS.close()
 }
 
+WS2.onmessage = function(event) {
+  console.log("got onmessage")
+  var data = JSON.parse(event.data)
+  switch (data.type) {
+    case "ping":
+      WS2.send(JSON.stringify({type:"pong"}))
+      break
+  }
+}
+
+
 WS.onmessage = function(event) {
   // @todo decode and add message to remote description
   console.log(event)
   var data = JSON.parse(event.data)
   console.log(event.data)
   switch (data.type) {
+    // case "healthCheck":
+      
+    //   window.WS2.send(JSON.stringify({type:"ConnectionID", data: data.data}))
+    //   console.log(window.WS2)
+    //   startWS2OnMessage()
+    case "uuidSync":
+      window.WS2.send(JSON.stringify({type:"uuidSync", data: data.data}))
+      break
     case "InitCaller":
       initCaller()
       break 
     case "CallerSessionDesc":
       document.getElementById('remoteSessionDescription').value = data.data
-      initReceiver()
+      initCallee()
       break
     case "CalleeSessionDesc":
       console.log("received ReceiverSessionDesc")
@@ -137,15 +157,16 @@ WS.onmessage = function(event) {
       incomingICEcandidate(candidateMessage)
       break
     case "UpgradeToCaller":
-        console.log("Upgrating to Caller")
-        WS.send(JSON.stringify({type:"UpgradeToCaller", data:sessionDesc}))
-        break
+      console.log("Upgrating to Caller")
+      WS.send(JSON.stringify({type:"UpgradeToCaller", data:sessionDesc}))
+      break
     default:
       alert("invalid session description type: ", data.type)
   }
+  console.log("At the end")
 }
 
-window.initReceiver = () => {
+window.initCallee = () => {
   let sd = document.getElementById('remoteSessionDescription').value
   if (sd === '') {
     return alert('Session Description must not be empty')
