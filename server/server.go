@@ -9,14 +9,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
+	"nhooyr.io/websocket"
 )
-
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-}
 
 // PeerStatus is an enum for Caller and Callee connection status
 type PeerStatus string
@@ -55,8 +50,8 @@ const wsMsgUUIDSync = "uuidSync"
 var wsMessageTypes = [...]string{wsMsgInitCaller, wsMsgCallerSessionDesc, wsMsgCalleeSessionDesc, wsMsgICECandidate, wsMsgUpgradeToCallerStatus, wsMsgPong, wsMsgStartHealthcheck, wsMsgUUIDSync}
 
 type wsMessage struct {
-	data    []byte // marshalled websocket message data
-	msgType int    // websocket message type identifier
+	data    []byte                // marshalled websocket message data
+	msgType websocket.MessageType // websocket message type identifier
 }
 
 // wsMsg is used for handling websocket json messages
@@ -137,7 +132,6 @@ func StartServer(addr string) (err error) {
 
 	http.HandleFunc("/", indexPageHandler)
 	http.HandleFunc("/websocket", websocketHandler)
-	http.HandleFunc("/pingsocket", pingHandler)
 
 	return http.ListenAndServe(addr, nil)
 }
@@ -157,108 +151,6 @@ func indexPageHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func pingHandler(w http.ResponseWriter, req *http.Request) {
-	ctx := req.Context()
-
-	logrus.Info("ping handler")
-
-	conn, err := upgrader.Upgrade(w, req, nil)
-	if err != nil {
-		logrus.Error(err)
-		return
-	}
-
-	defer conn.Close()
-
-	msgType, msg, err := conn.ReadMessage()
-	if err != nil {
-		logrus.Error("Error in ping message")
-		return
-	}
-
-	if msgType != websocket.TextMessage {
-		logrus.Errorf("Expected uuidSync message type got: %d", msgType)
-		return
-	}
-
-	var uuidMsg wsPayload
-	err = json.Unmarshal(msg, &uuidMsg)
-	if err != nil {
-		logrus.Error("Error in json unmarshal")
-		return
-	}
-
-	if uuidMsg.MsgType != wsMsgUUIDSync {
-		logrus.Errorf("Expected uuidSync message type got: %s", uuidMsg.MsgType)
-		return
-	}
-
-	var pingChan chan struct{}
-
-	tmpPingChan, ok := wsConnR.wsConnMap[uuid.MustParse(uuidMsg.Data)]
-	if !ok {
-		logrus.Error("Could not find ping channel")
-		return
-	}
-
-	pingChan = *tmpPingChan
-
-	// NOTE: pong handler gets blocked when trying to connect with initial websocket
-	// still stumped on why this happens
-	pingMessage := wsPayload{
-		MsgType: "ping",
-	}
-
-	pingJson, err := json.Marshal(pingMessage)
-	if err != nil {
-		logrus.Error(err)
-		return
-	}
-
-	pingBuffer := make(chan wsMessage, 10)
-	defer close(pingBuffer)
-
-	go func() {
-		for {
-			message := <-pingBuffer
-			err := conn.WriteMessage(message.msgType, message.data)
-			if err != nil {
-				logrus.Error("Unable to WriteMessage: ", err)
-
-				// consider the error to be a lost connection or corrupted buffer data
-				// close handler in case of this
-				break
-			}
-		}
-	}()
-
-	go func() {
-		for {
-			msgType, msg, err := conn.ReadMessage()
-			if err != nil {
-				logrus.Error("Error in ping message")
-				break
-			}
-
-			logrus.Debugf("%d %s", msgType, msg)
-		}
-	}()
-
-	defer func(pingChan chan struct{}) {
-		pingChan <- struct{}{}
-	}(pingChan)
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			time.Sleep(2 * time.Second)
-			pingBuffer <- wsMessage{msgType: websocket.TextMessage, data: pingJson}
-		}
-	}
-}
-
 func websocketHandler(w http.ResponseWriter, req *http.Request) {
 	ctx, cancel := context.WithCancel(req.Context())
 	defer cancel()
@@ -273,13 +165,12 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 	}
 	chatroomStats.RUnlock()
 
-	conn, err := upgrader.Upgrade(w, req, nil)
+	conn, err := websocket.Accept(w, req, nil)
 	if err != nil {
 		logrus.Error(err)
 		return
 	}
-
-	defer conn.Close()
+	defer conn.Close(websocket.StatusInternalError, "defering disconnect")
 
 	logrus.Info("Added new WS connection")
 
@@ -296,14 +187,10 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 		reconnect: true,
 		pingStop:  make(chan struct{}, 1),
 	}
-	defer close(curWSConn.pingStop)
+	// defer close(curWSConn.pingStop)
 
 	wsLogger := logrus.WithFields(logrus.Fields{"isCaller": curWSConn.isCaller, "uuid": curWSConn.ID})
 	curWSConn.logger = wsLogger
-
-	wsConnR.Lock()
-	wsConnR.wsConnMap[curWSConn.ID] = &curWSConn.pingStop
-	wsConnR.Unlock()
 
 	chatroomStats.Lock()
 	chatroomStats.wsCount++
@@ -336,7 +223,7 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 }
 
 func (curWSConn *WSConn) startChannel(ctx context.Context, log *logrus.Entry) {
-	ctx2, cancel := context.WithCancel(context.Background())
+	ctx2, cancel := context.WithCancel(ctx)
 
 	chatroomStats.RLock()
 	logrus.Debugf("Called startChannel %s %d", chatroomStats.callerStatus, chatroomStats.wsCount)
@@ -424,8 +311,6 @@ func (curWSConn *WSConn) startChannel(ctx context.Context, log *logrus.Entry) {
 		cancel()
 	}()
 
-	curWSConn.uuidSync(ctx2, curWSConn.writeBuffer, log)
-
 	if curWSConn.isCaller {
 		wg.Add(1)
 		go curWSConn.initCaller(ctx2, curWSConn.writeBuffer, closedInit, log, &wg)
@@ -448,24 +333,6 @@ func (curWSConn *WSConn) startChannel(ctx context.Context, log *logrus.Entry) {
 	log.Info("Exiting handler")
 }
 
-func (wsConn *WSConn) uuidSync(ctx context.Context, messageBuffer chan<- wsMessage, log *logrus.Entry) {
-	uuidSyncMessage := wsPayload{
-		MsgType: wsMsgUUIDSync,
-		Data:    wsConn.ID.String(),
-	}
-
-	uuidSyncMessageJSON, err := json.Marshal(uuidSyncMessage)
-	if err != nil {
-		log.Error(err)
-		return
-	}
-
-	messageBuffer <- wsMessage{
-		msgType: websocket.TextMessage,
-		data:    uuidSyncMessageJSON,
-	}
-}
-
 // websocket read loop
 func (wsConn *WSConn) readLoop(ctx context.Context, messageBuffer chan<- wsMessage, closedConn chan bool, log *logrus.Entry, wg *sync.WaitGroup) {
 	defer func() {
@@ -477,8 +344,7 @@ func (wsConn *WSConn) readLoop(ctx context.Context, messageBuffer chan<- wsMessa
 
 readLoop:
 	for {
-		log.Debug("Readloop")
-		msgType, msg, err := wsConn.conn.ReadMessage()
+		msgType, msg, err := wsConn.conn.Read(ctx)
 		if err != nil {
 			wsConn.RLock()
 			log.Error("Error in receive message: ", err, wsConn.reconnect)
@@ -486,7 +352,7 @@ readLoop:
 			break
 		}
 
-		if msgType != websocket.TextMessage {
+		if msgType != websocket.MessageText {
 			log.Errorf("Unknown gorilla websocket message type: %d", msgType)
 			return
 		}
@@ -533,7 +399,7 @@ readLoop:
 				calleeSessionDescriptionChan <- msg
 			}
 		case wsMsgICECandidate:
-			log.Info("Received ICE candidate")
+			// log.Info("Received ICE candidate")
 			if incomingWSMessage.Data == "" {
 				log.Warn("Empty caller ICE candidate data")
 			}
@@ -563,7 +429,7 @@ func (wsConn *WSConn) writeLoop(ctx context.Context, messageBuffer <-chan wsMess
 	for {
 		select {
 		case message := <-messageBuffer:
-			err := wsConn.conn.WriteMessage(message.msgType, message.data)
+			err := wsConn.conn.Write(ctx, websocket.MessageText, message.data)
 			if err != nil {
 				log.Error("Unable to WriteMessage: ", err)
 
@@ -605,7 +471,7 @@ func (wsConn *WSConn) initCaller(ctx context.Context, messageBuffer chan<- wsMes
 		log.Info("Sending initCallerJSON")
 		messageBuffer <- wsMessage{
 			data:    initCallerJSON,
-			msgType: websocket.TextMessage,
+			msgType: websocket.MessageText,
 		}
 
 		chatroomStats.Lock()
@@ -632,7 +498,7 @@ func (wsConn *WSConn) initCallee(ctx context.Context, messageBuffer chan<- wsMes
 		log.Info("Received caller session description")
 
 		messageBuffer <- wsMessage{
-			msgType: websocket.TextMessage,
+			msgType: websocket.MessageText,
 			data:    callerSD,
 		}
 	case <-ctx.Done():
@@ -659,7 +525,7 @@ func (wsConn *WSConn) calleeICEBuffer(ctx context.Context, messageBuffer chan<- 
 	log.Info("Received callee session description")
 
 	messageBuffer <- wsMessage{
-		msgType: websocket.TextMessage,
+		msgType: websocket.MessageText,
 		data:    calleeSD,
 	}
 
@@ -669,7 +535,7 @@ func (wsConn *WSConn) calleeICEBuffer(ctx context.Context, messageBuffer chan<- 
 		select {
 		case iceCandidate := <-iceCandidatesCallee:
 			messageBuffer <- wsMessage{
-				msgType: websocket.TextMessage,
+				msgType: websocket.MessageText,
 				data:    iceCandidate,
 			}
 		case <-ctx.Done():
@@ -690,7 +556,7 @@ func (wsConn *WSConn) callerICEBuffer(ctx context.Context, messageBuffer chan<- 
 		select {
 		case iceCandidate := <-iceCandidatesCaller:
 			messageBuffer <- wsMessage{
-				msgType: websocket.TextMessage,
+				msgType: websocket.MessageText,
 				data:    iceCandidate,
 			}
 		case <-ctx.Done():

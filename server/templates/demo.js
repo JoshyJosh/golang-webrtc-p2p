@@ -1,7 +1,6 @@
 /* eslint-env browser */
 (function() {
 
-window.WS2 = new WebSocket('ws://' + window.location.host + '/pingsocket') // could use wss://
 window.WS = new WebSocket('ws://' + window.location.host + '/websocket') // could use wss://
 // webrtc WS is no longer able to ping when establishing webrtc connection will use second websocket for healthcheck
 
@@ -113,16 +112,6 @@ pc.ontrack = function (event) {
   // WS.close()
 }
 
-WS2.onmessage = function(event) {
-  console.log("got onmessage")
-  var data = JSON.parse(event.data)
-  switch (data.type) {
-    case "ping":
-      WS2.send(JSON.stringify({type:"pong"}))
-      break
-  }
-}
-
 
 WS.onmessage = function(event) {
   // @todo decode and add message to remote description
@@ -135,9 +124,6 @@ WS.onmessage = function(event) {
     //   window.WS2.send(JSON.stringify({type:"ConnectionID", data: data.data}))
     //   console.log(window.WS2)
     //   startWS2OnMessage()
-    case "uuidSync":
-      window.WS2.send(JSON.stringify({type:"uuidSync", data: data.data}))
-      break
     case "InitCaller":
       initCaller()
       break 
