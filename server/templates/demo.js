@@ -2,7 +2,44 @@
 (function() {
 
 window.WS = new WebSocket('ws://' + window.location.host + '/websocket') // could use wss://
-// webrtc WS is no longer able to ping when establishing webrtc connection will use second websocket for healthcheck
+
+window.startSession = function() {
+  window.WS.onmessage = function(event) {
+    // @todo decode and add message to remote description
+    console.log(event)
+    var data = JSON.parse(event.data)
+    console.log(event.data)
+    switch (data.type) {
+      case "InitCaller":
+        window.initCaller()
+        break 
+      case "CallerSessionDesc":
+        document.getElementById('remoteSessionDescription').value = data.data
+        window.initCallee()
+        break
+      case "CalleeSessionDesc":
+        console.log("received ReceiverSessionDesc")
+        remoteSDP = JSON.parse(atob(data.data))
+        window.pc.setRemoteDescription(remoteSDP)
+        // @todo set function to recieve remote session description and initialize call
+        break
+      case "ICECandidate":
+        console.log("Getting ice candidate")
+        var candidateMessage = JSON.parse(atob(data.data))
+        window.incomingICEcandidate(candidateMessage)
+        break
+      case "UpgradeToCaller":
+        console.log("Upgrating to Caller")
+        WS.send(JSON.stringify({type:"UpgradeToCaller", data:sessionDesc}))
+        break
+      default:
+        alert("invalid session description type: ", data.type)
+    }
+    console.log("At the end")
+  }
+
+  window.WS.send(JSON.stringify({type:"StartSession"}))
+}
 
 window.pc = new RTCPeerConnection({
   iceServers: [
@@ -39,7 +76,7 @@ function closeVideoCall() {
   remoteVideo.srcObject = null
 }
 
-pc.oniceconnectionstatechange = e => {
+window.pc.oniceconnectionstatechange = e => {
   log(pc.iceConnectionState)
 
   switch(pc.iceConnectionState) {
@@ -56,7 +93,7 @@ pc.oniceconnectionstatechange = e => {
   }
 }
 
-pc.onsignalingstatechange = e => {
+window.pc.onsignalingstatechange = e => {
   switch(pc.signalingState) {
     case "closed":
       closeVideoCall()
@@ -64,15 +101,31 @@ pc.onsignalingstatechange = e => {
   }
 }
 
-pc.onicecandidate = event => {
+window.pc.onicecandidate = (event) => {
   console.log("in onicecandidate")
   if (event.candidate) {
     console.log(event.candidate)
     WS.send(JSON.stringify({type:"ICECandidate", data:btoa(JSON.stringify(event.candidate))}))
+  } else {
+    console.log("empty candidate")
+    return
   }
 }
 
-pc.onnegotiationneeded = () => {
+window.pc.onicegatheringstatechange = (event) => {
+  let connection = event.target;
+
+  switch(connection.iceGatheringState) {
+    case "gathering":
+      console.log("ice candidate still gathering")
+      break
+    case "complete":
+      console.log("ice candidate gathering complete")
+      break
+  }
+}
+
+window.pc.onnegotiationneeded = () => {
   console.log("in onnegotiationneeded")
   pc.createOffer().then(offer => pc.setLocalDescription(offer))
   .then(() => {
@@ -99,7 +152,7 @@ window.incomingICEcandidate = (msg) => {
   pc.addIceCandidate(candidate).catch(log)
 }
 
-pc.ontrack = function (event) {
+window.pc.ontrack = function (event) {
   console.log("in ontrack event")
   if (document.getElementById('remoteVideo').srcObject) {
     document.getElementById('remoteVideo').srcObject.addTrack(event.track)
@@ -110,46 +163,6 @@ pc.ontrack = function (event) {
 
   // after WebRTC connection is established close websocket connection
   // WS.close()
-}
-
-
-WS.onmessage = function(event) {
-  // @todo decode and add message to remote description
-  console.log(event)
-  var data = JSON.parse(event.data)
-  console.log(event.data)
-  switch (data.type) {
-    // case "healthCheck":
-      
-    //   window.WS2.send(JSON.stringify({type:"ConnectionID", data: data.data}))
-    //   console.log(window.WS2)
-    //   startWS2OnMessage()
-    case "InitCaller":
-      initCaller()
-      break 
-    case "CallerSessionDesc":
-      document.getElementById('remoteSessionDescription').value = data.data
-      initCallee()
-      break
-    case "CalleeSessionDesc":
-      console.log("received ReceiverSessionDesc")
-      remoteSDP = JSON.parse(atob(data.data))
-      pc.setRemoteDescription(remoteSDP)
-      // @todo set function to recieve remote session description and initialize call
-      break
-    case "ICECandidate":
-      console.log("Getting ice candidate")
-      var candidateMessage = JSON.parse(atob(data.data))
-      incomingICEcandidate(candidateMessage)
-      break
-    case "UpgradeToCaller":
-      console.log("Upgrating to Caller")
-      WS.send(JSON.stringify({type:"UpgradeToCaller", data:sessionDesc}))
-      break
-    default:
-      alert("invalid session description type: ", data.type)
-  }
-  console.log("At the end")
 }
 
 window.initCallee = () => {

@@ -43,11 +43,9 @@ const wsMsgCallerSessionDesc = "CallerSessionDesc"
 const wsMsgCalleeSessionDesc = "CalleeSessionDesc"
 const wsMsgICECandidate = "ICECandidate"
 const wsMsgUpgradeToCallerStatus = "UpgradeToCaller"
-const wsMsgStartHealthcheck = "healthCheck"
-const wsMsgPong = "pong"
-const wsMsgUUIDSync = "uuidSync"
+const wsMsgStartSession = "StartSession"
 
-var wsMessageTypes = [...]string{wsMsgInitCaller, wsMsgCallerSessionDesc, wsMsgCalleeSessionDesc, wsMsgICECandidate, wsMsgUpgradeToCallerStatus, wsMsgPong, wsMsgStartHealthcheck, wsMsgUUIDSync}
+var wsMessageTypes = [...]string{wsMsgInitCaller, wsMsgCallerSessionDesc, wsMsgCalleeSessionDesc, wsMsgICECandidate, wsMsgUpgradeToCallerStatus, wsMsgStartSession}
 
 type wsMessage struct {
 	data    []byte                // marshalled websocket message data
@@ -77,16 +75,16 @@ var readTimeout = 10 * time.Second
 // isValidIncomingType validates if incoming wsMsg.MsgType has been defined
 // and should be accepted
 func (w *wsPayload) isValidIncomingType() (isValid bool) {
-	for _, msgType := range wsMessageTypes {
-		// only server should send the InitCaller part
-		if w.MsgType == "InitCaller" {
-			return false
-		} else if w.MsgType == msgType {
-			return true
-		}
-	}
 
-	return
+	switch w.MsgType {
+	case wsMsgCallerSessionDesc, wsMsgCalleeSessionDesc, wsMsgICECandidate, wsMsgUpgradeToCallerStatus, wsMsgStartSession:
+		return true
+	case wsMsgInitCaller:
+		logrus.Warn("Received InitCaller")
+		fallthrough
+	default:
+		return false
+	}
 }
 
 // WSConn is used to serialize WSConn, and help storing sessionDescriptions
@@ -96,7 +94,6 @@ type WSConn struct {
 	isCaller    bool
 	reconnect   bool
 	logger      *logrus.Entry
-	pingStop    chan struct{}
 	writeBuffer chan wsMessage
 	sync.RWMutex
 }
@@ -185,7 +182,6 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 		ID:        newUUID,
 		conn:      conn,
 		reconnect: true,
-		pingStop:  make(chan struct{}, 1),
 	}
 	// defer close(curWSConn.pingStop)
 
@@ -257,10 +253,15 @@ func (curWSConn *WSConn) startChannel(ctx context.Context, log *logrus.Entry) {
 	closedICE := make(chan bool, 1)
 	defer close(closedICE)
 
+	startSession := make(chan struct{}, 1)
+	defer close(startSession)
+	pingStop := make(chan struct{}, 1)
+	defer close(pingStop)
+
 	// channel closure manager
 	go func() {
 		select {
-		case <-curWSConn.pingStop:
+		case <-pingStop:
 		case <-closedConn:
 		case <-closedWConn:
 		case <-closedInit:
@@ -311,30 +312,47 @@ func (curWSConn *WSConn) startChannel(ctx context.Context, log *logrus.Entry) {
 		cancel()
 	}()
 
-	if curWSConn.isCaller {
-		wg.Add(1)
-		go curWSConn.initCaller(ctx2, curWSConn.writeBuffer, closedInit, log, &wg)
-		wg.Add(1)
-		go curWSConn.calleeICEBuffer(ctx2, curWSConn.writeBuffer, closedICE, log, &wg)
-	} else {
-		wg.Add(1)
-		go curWSConn.initCallee(ctx2, curWSConn.writeBuffer, closedInit, log, &wg)
-		wg.Add(1)
-		go curWSConn.callerICEBuffer(ctx2, curWSConn.writeBuffer, closedICE, log, &wg)
-	}
-
 	wg.Add(1)
 	go curWSConn.writeLoop(ctx2, curWSConn.writeBuffer, closedWConn, log, &wg)
 	wg.Add(1)
-	go curWSConn.readLoop(ctx2, readBuffer, closedConn, log, &wg)
+	go curWSConn.readLoop(ctx2, readBuffer, closedConn, log, &wg, startSession)
+
+	curWSConn.pingLoop(ctx2, pingStop, log)
+
+	go func() {
+		<-startSession
+		if curWSConn.isCaller {
+			wg.Add(1)
+			go curWSConn.calleeICEBuffer(ctx2, curWSConn.writeBuffer, closedICE, log, &wg)
+			wg.Add(1)
+			go curWSConn.initCaller(ctx2, curWSConn.writeBuffer, closedInit, log, &wg)
+		} else {
+			wg.Add(1)
+			go curWSConn.initCallee(ctx2, curWSConn.writeBuffer, closedInit, log, &wg)
+			wg.Add(1)
+			go curWSConn.callerICEBuffer(ctx2, curWSConn.writeBuffer, closedICE, log, &wg)
+		}
+	}()
 
 	wg.Wait()
 
 	log.Info("Exiting handler")
 }
 
+func (curWSConn *WSConn) pingLoop(ctx context.Context, pingStop chan struct{}, log *logrus.Entry) {
+	for {
+		log.Info("Pinging")
+		time.Sleep(2 * time.Second)
+		if err := curWSConn.conn.Ping(ctx); err != nil {
+			log.Error(err)
+			pingStop <- struct{}{}
+			return
+		}
+	}
+}
+
 // websocket read loop
-func (wsConn *WSConn) readLoop(ctx context.Context, messageBuffer chan<- wsMessage, closedConn chan bool, log *logrus.Entry, wg *sync.WaitGroup) {
+func (wsConn *WSConn) readLoop(ctx context.Context, messageBuffer chan<- wsMessage, closedConn chan bool, log *logrus.Entry, wg *sync.WaitGroup, startSession chan struct{}) {
 	defer func() {
 		log.Debug("In wg defer in readLoop")
 		wg.Done()
@@ -371,8 +389,9 @@ readLoop:
 
 		// @todo send to appropriate functions/channels
 		switch incomingWSMessage.MsgType {
-		case "pong":
-			log.Info("Got pong")
+		case wsMsgStartSession:
+			log.Info("Starting session")
+			startSession <- struct{}{}
 			continue
 		case wsMsgUpgradeToCallerStatus:
 			log.Info("Upgrading to Caller")
