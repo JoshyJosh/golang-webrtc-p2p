@@ -83,7 +83,7 @@ window.pc.oniceconnectionstatechange = e => {
     case "completed":
       console.log("WebRTC connection completed closing WS")
       // When WebRTC has been fully established close the WS connection
-      WS.close()
+      window.WS.close()
       break
     case "disconnected":
     case "closed":
@@ -105,7 +105,7 @@ window.pc.onicecandidate = (event) => {
   console.log("in onicecandidate")
   if (event.candidate) {
     console.log(event.candidate)
-    WS.send(JSON.stringify({type:"ICECandidate", data:btoa(JSON.stringify(event.candidate))}))
+    window.WS.send(JSON.stringify({type:"ICECandidate", data:btoa(JSON.stringify(event.candidate))}))
   } else {
     console.log("empty candidate")
     return
@@ -130,7 +130,7 @@ window.pc.onnegotiationneeded = () => {
   pc.createOffer().then(offer => pc.setLocalDescription(offer))
   .then(() => {
     sessionDesc = btoa(JSON.stringify(pc.localDescription))
-    WS.send(JSON.stringify({type:"CallerSessionDesc", data:sessionDesc}))
+    window.WS.send(JSON.stringify({type:"CallerSessionDesc", data:sessionDesc}))
     document.getElementById('localSessionDescription').value = sessionDesc
   })
   .catch(log)
@@ -188,7 +188,7 @@ window.initCallee = () => {
   })
   .then(function() {
     sessionDesc = btoa(JSON.stringify(pc.localDescription))
-    WS.send(JSON.stringify({type:"CalleeSessionDesc", data: sessionDesc}))
+    window.WS.send(JSON.stringify({type:"CalleeSessionDesc", data: sessionDesc}))
   })
   .catch(log)
 }
