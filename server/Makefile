@@ -4,7 +4,7 @@ TARGETS: test
 TESTBASE=go test videocaller --parallel=1 -v
 
 startserver: 
-	go run cmd/main.go --address=:3000 -timeout=30s
+	go run cmd/main.go --port=:3000
 
 test: 
 	$(TESTBASE) -count=1

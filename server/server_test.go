@@ -9,11 +9,12 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/prometheus/common/log"
 	"github.com/sirupsen/logrus"
 )
 
 func testServerTeardown(t *testing.T, ws1, ws2, ws3 *websocket.Conn) {
-	t.Log("in testServerTeardown")
+	t.Log("In testServerTeardown")
 	// cannot defer during the test, must do Closes on teardown
 
 	if ws3 != nil {
@@ -28,9 +29,7 @@ func testServerTeardown(t *testing.T, ws1, ws2, ws3 *websocket.Conn) {
 		ws1.Close()
 	}
 
-	time.Sleep(500 * time.Millisecond)
-
-	return
+	time.Sleep(pingPeriod)
 }
 
 // check that server has no active connections and caller is unset
@@ -38,21 +37,19 @@ func checkInitialServerStatus(t *testing.T) {
 	chatroomStats.RLock()
 	if chatroomStats.wsCount != 0 {
 		defer chatroomStats.RUnlock()
-		t.Fatalf("unexpected active connections, expect 0; have: %d", chatroomStats.wsCount)
+		t.Fatalf("Unexpected active connections, expect 0; have: %d", chatroomStats.wsCount)
 	}
 
 	if chatroomStats.callerStatus != unsetPeerStatus {
 		defer chatroomStats.RUnlock()
-		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomStats.callerStatus, unsetPeerStatus)
+		t.Fatalf("Unexpected callerStatus for first connection: %s; expected %s", chatroomStats.callerStatus, unsetPeerStatus)
 	}
 
 	chatroomStats.RUnlock()
-
-	return
 }
 
 // first ws connection is commmon among all subtests
-func firstWSConnection(t *testing.T, wsUrl string) (ws websocket.Conn) {
+func firstWSConnection(t *testing.T, wsUrl string) (ws *websocket.Conn) {
 	t.Log("Checking initial status")
 
 	wstmp, resp, err := websocket.DefaultDialer.Dial(wsUrl, nil)
@@ -60,49 +57,27 @@ func firstWSConnection(t *testing.T, wsUrl string) (ws websocket.Conn) {
 		t.Fatal(err)
 	}
 
-	ws = *wstmp
 	if resp.StatusCode != http.StatusSwitchingProtocols {
-		t.Fatalf("unexpected first response status: %d; expected: %d", resp.StatusCode, http.StatusSwitchingProtocols)
+		t.Fatalf("Unexpected first response status: %d; expected: %d", resp.StatusCode, http.StatusSwitchingProtocols)
 	}
 
 	// sleep for counter update
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(pingPeriod)
 
 	chatroomStats.RLock()
 	if chatroomStats.wsCount != 1 {
 		defer chatroomStats.RUnlock()
-		t.Fatalf("unexpected active connections, expect 1; have: %d", chatroomStats.wsCount)
+		t.Fatalf("Unexpected active connections, expect 1; have: %d", chatroomStats.wsCount)
 	}
+
+	// if chatroomStats.callerStatus != initPeerStatus {
+	// 	defer chatroomStats.RUnlock()
+	// 	t.Fatalf("Unexpected callerStatus for first connection: %s; expected %s", chatroomStats.callerStatus, initPeerStatus)
+	// }
 
 	chatroomStats.RUnlock()
 
-	msgType, msgBody, err := ws.ReadMessage()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if msgType != websocket.TextMessage {
-		t.Fatalf("unknown response message type: %d", msgType)
-	}
-
-	msg1 := wsPayload{}
-	if err = json.Unmarshal(msgBody, &msg1); err != nil {
-		t.Fatal(err)
-	}
-
-	if msg1.MsgType != wsMsgInitCaller {
-		t.Fatalf("unknown response message body: %s; expected: %s", msg1.MsgType, wsMsgInitCaller)
-	}
-
-	chatroomStats.RLock()
-	if chatroomStats.callerStatus != initPeerStatus {
-		defer chatroomStats.RUnlock()
-		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomStats.callerStatus, initPeerStatus)
-	}
-
-	chatroomStats.RUnlock()
-
-	return
+	return wstmp
 }
 
 // TestMaximumConnections tries to connect multiple users to websockets
@@ -117,11 +92,10 @@ func testMaximumConnections(t *testing.T, server *httptest.Server) {
 	wsUrl := strings.Replace(server.URL, "http", "ws", 1)
 
 	// check server status
-	t.Run("initial status", checkInitialServerStatus)
+	t.Run("Initial status", checkInitialServerStatus)
 
 	// first connection
-	wstmp := firstWSConnection(t, wsUrl)
-	ws1 = &wstmp
+	ws1 = firstWSConnection(t, wsUrl)
 
 	// second connection
 	ws2, resp, err := websocket.DefaultDialer.Dial(wsUrl, nil)
@@ -131,7 +105,7 @@ func testMaximumConnections(t *testing.T, server *httptest.Server) {
 	}
 
 	if resp.StatusCode != http.StatusSwitchingProtocols {
-		t.Fatalf("unexpected second response status: %d; expected %d", resp.StatusCode, http.StatusSwitchingProtocols)
+		t.Fatalf("Unexpected second response status: %d; expected %d", resp.StatusCode, http.StatusSwitchingProtocols)
 	}
 
 	// sleep for counter update
@@ -140,25 +114,27 @@ func testMaximumConnections(t *testing.T, server *httptest.Server) {
 	chatroomStats.RLock()
 	if chatroomStats.wsCount != 2 {
 		defer chatroomStats.RUnlock()
-		t.Fatalf("unexpected active connections, expect 2; have: %d", chatroomStats.wsCount)
+		t.Fatalf("Unexpected active connections, expect 2; have: %d", chatroomStats.wsCount)
 	}
 	chatroomStats.RUnlock()
 
 	// Third person should not be able to connect to peer to peer call
 	ws3, resp, err = websocket.DefaultDialer.Dial(wsUrl, nil)
 	if err == nil {
-		t.Fatal("expected error in third response")
+		t.Fatal("Expected error in third response")
 	}
 
 	if resp.StatusCode != http.StatusLocked {
-		t.Fatalf("unexpected third response status: %d; expected %d", resp.StatusCode, http.StatusLocked)
+		t.Fatalf("Unexpected third response status: %d; expected %d", resp.StatusCode, http.StatusLocked)
 	}
 
 	chatroomStats.RLock()
 	defer chatroomStats.RUnlock()
 	if chatroomStats.wsCount != 2 {
-		t.Fatalf("unexpected active connections, expect 2; have: %d", chatroomStats.wsCount)
+		t.Fatalf("Unexpected active connections, expect 2; have: %d", chatroomStats.wsCount)
 	}
+
+	time.Sleep(pingPeriod)
 }
 
 // TestReconnectCaller test that if Caller drops connection,
@@ -174,26 +150,24 @@ func testReconnectCaller(t *testing.T, server *httptest.Server) {
 	wsUrl := strings.Replace(server.URL, "http", "ws", 1)
 
 	// check server status
-	t.Run("initial status", checkInitialServerStatus)
+	t.Run("Initial status", checkInitialServerStatus)
 
 	// first connection
-	wstmp := firstWSConnection(t, wsUrl)
-	ws1 = &wstmp
-
+	ws1 = firstWSConnection(t, wsUrl)
 	ws1.Close()
 
 	// sleep for server to recognize websocket disconnect
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(pingPeriod)
 
 	chatroomStats.RLock()
 	if chatroomStats.wsCount != 0 {
 		defer chatroomStats.RUnlock()
-		t.Fatalf("unexpected number of active connections, expect 0; have: %d", chatroomStats.wsCount)
+		t.Fatalf("Unexpected number of active connections, expect 0; have: %d", chatroomStats.wsCount)
 	}
 
 	if chatroomStats.callerStatus != unsetPeerStatus {
 		defer chatroomStats.RUnlock()
-		t.Fatalf("unexpected callerStatus for first connection disconnect: %s; expected %s", chatroomStats.callerStatus, initPeerStatus)
+		t.Fatalf("Unexpected callerStatus for first connection disconnect: %s; expected %s", chatroomStats.callerStatus, initPeerStatus)
 	}
 	chatroomStats.RUnlock()
 
@@ -203,36 +177,20 @@ func testReconnectCaller(t *testing.T, server *httptest.Server) {
 	}
 
 	if resp.StatusCode != http.StatusSwitchingProtocols {
-		t.Fatalf("unexpected first response status: %d; expected: %d", resp.StatusCode, http.StatusSwitchingProtocols)
+		t.Fatalf("Unexpected first response status: %d; expected: %d", resp.StatusCode, http.StatusSwitchingProtocols)
 	}
 
-	msgType, msgBody, err := ws1.ReadMessage()
-	if err != nil {
-		t.Fatal(err)
-	}
+	time.Sleep(pingPeriod)
 
 	chatroomStats.RLock()
 	defer chatroomStats.RUnlock()
 	if chatroomStats.wsCount != 1 {
-		t.Fatalf("unexpected number of active connections, expect 1; have: %d", chatroomStats.wsCount)
+		t.Fatalf("Unexpected number of active connections, expect 1; have: %d", chatroomStats.wsCount)
 	}
 
-	if msgType != websocket.TextMessage {
-		t.Fatalf("Unknown response message type: %d", msgType)
-	}
-
-	msg1 := wsPayload{}
-	if err = json.Unmarshal(msgBody, &msg1); err != nil {
-		t.Fatal(err)
-	}
-
-	if msg1.MsgType != wsMsgInitCaller {
-		t.Fatalf("Unknown response message body: %s; expected: %s", msg1.MsgType, wsMsgInitCaller)
-	}
-
-	if chatroomStats.callerStatus != initPeerStatus {
-		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomStats.callerStatus, initPeerStatus)
-	}
+	// if chatroomStats.callerStatus != initPeerStatus {
+	// 	t.Fatalf("Unexpected callerStatus for first connection: %s; expected %s", chatroomStats.callerStatus, initPeerStatus)
+	// }
 }
 
 // TestReconnectCallee test that if Callee drops connection,
@@ -250,8 +208,7 @@ func testReconnectCallee(t *testing.T, server *httptest.Server) {
 	checkInitialServerStatus(t)
 
 	// first connection
-	wstmp := firstWSConnection(t, wsUrl)
-	ws1 = &wstmp
+	ws1 = firstWSConnection(t, wsUrl)
 
 	// second connection
 	ws2, resp, err := websocket.DefaultDialer.Dial(wsUrl, nil)
@@ -260,7 +217,7 @@ func testReconnectCallee(t *testing.T, server *httptest.Server) {
 	}
 
 	if resp.StatusCode != http.StatusSwitchingProtocols {
-		t.Fatalf("unexpected second response status: %d; expected %d", resp.StatusCode, http.StatusSwitchingProtocols)
+		t.Fatalf("Unexpected second response status: %d; expected %d", resp.StatusCode, http.StatusSwitchingProtocols)
 	}
 
 	// sleep for websocket upgrade
@@ -269,29 +226,19 @@ func testReconnectCallee(t *testing.T, server *httptest.Server) {
 	chatroomStats.RLock()
 	if chatroomStats.wsCount != 2 {
 		defer chatroomStats.RUnlock()
-		t.Fatalf("unexpected active connections, expect 2; have: %d", chatroomStats.wsCount)
-	}
-
-	if chatroomStats.callerStatus != initPeerStatus {
-		defer chatroomStats.RUnlock()
-		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomStats.callerStatus, initPeerStatus)
+		t.Fatalf("Unexpected active connections, expect 2; have: %d", chatroomStats.wsCount)
 	}
 	chatroomStats.RUnlock()
 
 	ws2.Close()
 
 	// sleep for server to recognize websocket disconnect
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(pingPeriod)
 
 	chatroomStats.RLock()
 	if chatroomStats.wsCount != 1 {
 		defer chatroomStats.RUnlock()
-		t.Fatalf("unexpected active connections, expect 1; have: %d", chatroomStats.wsCount)
-	}
-
-	if chatroomStats.callerStatus != initPeerStatus {
-		defer chatroomStats.RUnlock()
-		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomStats.callerStatus, initPeerStatus)
+		t.Fatalf("Unexpected active connections, expect 1; have: %d", chatroomStats.wsCount)
 	}
 	chatroomStats.RUnlock()
 
@@ -301,7 +248,7 @@ func testReconnectCallee(t *testing.T, server *httptest.Server) {
 	}
 
 	if resp.StatusCode != http.StatusSwitchingProtocols {
-		t.Fatalf("unexpected second response status: %d; expected %d", resp.StatusCode, http.StatusSwitchingProtocols)
+		t.Fatalf("Unexpected second response status: %d; expected %d", resp.StatusCode, http.StatusSwitchingProtocols)
 	}
 
 	// sleep for websocket upgrade
@@ -310,11 +257,7 @@ func testReconnectCallee(t *testing.T, server *httptest.Server) {
 	chatroomStats.RLock()
 	defer chatroomStats.RUnlock()
 	if chatroomStats.wsCount != 2 {
-		t.Fatalf("unexpected active connections, expect 2; have: %d", chatroomStats.wsCount)
-	}
-
-	if chatroomStats.callerStatus != initPeerStatus {
-		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomStats.callerStatus, initPeerStatus)
+		t.Fatalf("Unexpected active connections, expect 2; have: %d", chatroomStats.wsCount)
 	}
 }
 
@@ -333,8 +276,7 @@ func testCalleeUpgradeToCaller(t *testing.T, server *httptest.Server) {
 	checkInitialServerStatus(t)
 
 	// first connection
-	wstmp := firstWSConnection(t, wsUrl)
-	ws1 = &wstmp
+	ws1 = firstWSConnection(t, wsUrl)
 
 	// second connection
 	ws2, resp, err := websocket.DefaultDialer.Dial(wsUrl, nil)
@@ -343,7 +285,7 @@ func testCalleeUpgradeToCaller(t *testing.T, server *httptest.Server) {
 	}
 
 	if resp.StatusCode != http.StatusSwitchingProtocols {
-		t.Fatalf("unexpected second response status: %d; expected %d", resp.StatusCode, http.StatusSwitchingProtocols)
+		t.Fatalf("Unexpected second response status: %d; expected %d", resp.StatusCode, http.StatusSwitchingProtocols)
 	}
 
 	// sleep for websocket upgrade
@@ -352,19 +294,18 @@ func testCalleeUpgradeToCaller(t *testing.T, server *httptest.Server) {
 	chatroomStats.RLock()
 	if chatroomStats.wsCount != 2 {
 		defer chatroomStats.RUnlock()
-		t.Fatalf("unexpected active connections, expect 2; have: %d", chatroomStats.wsCount)
+		t.Fatalf("Unexpected active connections, expect 2; have: %d", chatroomStats.wsCount)
 	}
 
-	if chatroomStats.callerStatus != initPeerStatus {
-		defer chatroomStats.RUnlock()
-		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomStats.callerStatus, initPeerStatus)
-	}
+	// if chatroomStats.callerStatus != initPeerStatus {
+	// 	defer chatroomStats.RUnlock()
+	// 	t.Fatalf("Unexpected callerStatus for first connection: %s; expected %s", chatroomStats.callerStatus, initPeerStatus)
+	// }
 	chatroomStats.RUnlock()
-
 	ws1.Close()
 
 	// sleep for server to recognize websocket disconnect
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(pingPeriod)
 
 	// upgrade caller
 	t.Log("Reading receiver message")
@@ -374,27 +315,44 @@ func testCalleeUpgradeToCaller(t *testing.T, server *httptest.Server) {
 	}
 
 	if msgType != websocket.TextMessage {
-		t.Fatalf("unknown response message type: %d", msgType)
+		t.Fatalf("Unknown response message type: %d", msgType)
 	}
 
-	msg1 := wsPayload{}
-	if err = json.Unmarshal(msgBody, &msg1); err != nil {
+	var incomingWSMessage wsPayload
+
+	if err = json.Unmarshal(msgBody, &incomingWSMessage); err != nil {
+		t.Fatal("Unable to unmarshal incoming message: ", err)
+	}
+
+	if incomingWSMessage.MsgType != wsMsgUpgradeToCallerStatus {
+		t.Fatalf("Unknown response message body: %s; expected: %s", incomingWSMessage, wsMsgInitCaller)
+	}
+
+	updateToCallerMsg := wsPayload{
+		MsgType: wsMsgUpgradeToCallerStatus,
+	}
+
+	updateToCallerJSON, err := json.Marshal(updateToCallerMsg)
+	if err != nil {
+		log.Error(err)
+		return
+	}
+
+	if err = ws2.WriteMessage(websocket.TextMessage, updateToCallerJSON); err != nil {
 		t.Fatal(err)
 	}
 
-	if msg1.MsgType != wsMsgInitCaller {
-		t.Fatalf("unknown response message body: %s; expected: %s", msg1.MsgType, wsMsgInitCaller)
-	}
+	time.Sleep(500 * time.Millisecond)
 
 	chatroomStats.RLock()
 	if chatroomStats.wsCount != 1 {
 		defer chatroomStats.RUnlock()
-		t.Fatalf("unexpected active connections, expect 1; have: %d", chatroomStats.wsCount)
+		t.Fatalf("Unexpected active connections, expect 1; have: %d", chatroomStats.wsCount)
 	}
 
 	if chatroomStats.callerStatus != initPeerStatus {
 		defer chatroomStats.RUnlock()
-		t.Fatalf("unexpected callerStatus for first connection: %s; expected %s", chatroomStats.callerStatus, initPeerStatus)
+		t.Fatalf("Unexpected callerStatus for first connection: %s; expected %s", chatroomStats.callerStatus, initPeerStatus)
 	}
 	chatroomStats.RUnlock()
 
@@ -404,7 +362,7 @@ func testCalleeUpgradeToCaller(t *testing.T, server *httptest.Server) {
 	}
 
 	if resp.StatusCode != http.StatusSwitchingProtocols {
-		t.Fatalf("unexpected first response status: %d; expected: %d", resp.StatusCode, http.StatusSwitchingProtocols)
+		t.Fatalf("Unexpected first response status: %d; expected: %d", resp.StatusCode, http.StatusSwitchingProtocols)
 	}
 
 	// sleep for counter update
@@ -413,10 +371,8 @@ func testCalleeUpgradeToCaller(t *testing.T, server *httptest.Server) {
 	chatroomStats.RLock()
 	defer chatroomStats.RUnlock()
 	if chatroomStats.wsCount != 2 {
-		t.Fatalf("unexpected active connections, expect 2; have: %d", chatroomStats.wsCount)
+		t.Fatalf("Unexpected active connections, expect 2; have: %d", chatroomStats.wsCount)
 	}
-
-	return
 }
 
 func TestUserConnections(t *testing.T) {
@@ -439,7 +395,7 @@ func TestUserConnections(t *testing.T) {
 		testReconnectCallee(t, server)
 	})
 	// @todo implement callee upgrade to caller
-	// t.Run("testCalleeUpgradeToCaller", func(t *testing.T) {
-	// 	testCalleeUpgradeToCaller(t, server)
-	// })
+	t.Run("testCalleeUpgradeToCaller", func(t *testing.T) {
+		testCalleeUpgradeToCaller(t, server)
+	})
 }

@@ -38,7 +38,7 @@ async function CheckStablePeerConnections(t, caller, receiver, additionalComment
     try {
         // @todo double check wait for peer connection to get established
 
-        callerPc = await caller.executeScript("return pc") 
+        callerPc = await caller.executeScript("return pc")
 
         await t.ok(callerPc.signalingState === "stable", "assert that Caller has established webRTC connection" + additionalComment)
 
@@ -50,13 +50,13 @@ async function CheckStablePeerConnections(t, caller, receiver, additionalComment
     
         receiverPc = await receiver.executeScript("return pc")
     
-        await t.ok(pc.signalingState === "stable", "assert that Receiver has established webRTC connection" + additionalComment)
+        await t.ok(receiverPc.signalingState === "stable", "assert that Receiver has established webRTC connection" + additionalComment)
     
-        await t.ok(pc.currentLocalDescription !== null, "assert that Receiver PeerConnection has non-null currentLocalDescription" + additionalComment)
-        await t.equal(pc.currentLocalDescription.type, "answer", "assert that Receiver PeerConnection has currentLocalDescription of type answer" + additionalComment)
+        await t.ok(receiverPc.currentLocalDescription !== null, "assert that Receiver PeerConnection has non-null currentLocalDescription" + additionalComment)
+        await t.equal(receiverPc.currentLocalDescription.type, "answer", "assert that Receiver PeerConnection has currentLocalDescription of type answer" + additionalComment)
     
-        await t.ok(pc.currentRemoteDescription !== null, "assert that Receiver PeerConnection has non-null currentRemoteDescription" + additionalComment)
-        await t.equal(pc.currentRemoteDescription.type, "offer", "assert that Receiver PeerConnection has currentRemoteDescription of type offer" + additionalComment)
+        await t.ok(receiverPc.currentRemoteDescription !== null, "assert that Receiver PeerConnection has non-null currentRemoteDescription" + additionalComment)
+        await t.equal(receiverPc.currentRemoteDescription.type, "offer", "assert that Receiver PeerConnection has currentRemoteDescription of type offer" + additionalComment)
     } catch(err) {
         throw err
     }
@@ -71,8 +71,8 @@ test("Firefox-SuccessfulConnection", async function (t){
     } catch(err) {
         console.error(err)
     } finally {
-        await driverCaller.quit()
         await driverReceiver.quit()
+        await driverCaller.quit()
         t.end()
     }
 })
