@@ -3,6 +3,30 @@
 
 window.WS = new WebSocket('ws://' + window.location.host + '/websocket') // could use wss://
 
+window.WS.onerror = function(event) {
+  console.log("received error, attempting reconnect to server")
+
+  // if (window.WS.readyState > 1) {
+  //   console.log("window either connected or connecting, skipping reconnect")
+  //   return
+  // }
+
+  window.WS = new WebSocket('ws://' + window.location.host + '/websocket') // could use wss://
+}
+
+// @todo error should have priority over close,
+// however if both are allowed the websocket connects twice
+window.WS.onclose = function(event) {
+  console.log("received close, attempting reconnect to server")
+
+  // if (window.WS.readyState > 1) {
+  //   console.log("window either connected or connecting, skipping reconnect")
+  //   return
+  // }
+
+  // window.WS = new WebSocket('ws://' + window.location.host + '/websocket') // could use wss://
+}
+
 window.startSession = function() {
   window.WS.onmessage = function(event) {
     // @todo decode and add message to remote description
@@ -59,11 +83,12 @@ function closeVideoCall() {
 
   if (remoteVideo.srcObject) {
     remoteVideo.srcObject.getTracks().forEach(track => track.stop())
+    remoteVideo.srcObject = null
   }
 
-  if (localVideo.srcObject) {
-    localVideo.srcObject.getTracks().forEach(track => track.stop())
-  }
+  // if (localVideo.srcObject) {
+  //   localVideo.srcObject.getTracks().forEach(track => track.stop())
+  // }
 
   pc.close()
 
@@ -74,6 +99,8 @@ function closeVideoCall() {
   
   // Remote srcObject completely
   remoteVideo.srcObject = null
+
+  window.WS.send(JSON.stringify({type:"ConnectionClosed"}))
 }
 
 window.pc.oniceconnectionstatechange = e => {
@@ -89,6 +116,8 @@ window.pc.oniceconnectionstatechange = e => {
     case "closed":
     case "failed":
       closeVideoCall()
+      pc.close()
+
       break
   }
 }
