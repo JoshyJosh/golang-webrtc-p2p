@@ -1,4 +1,8 @@
 /* eslint-env browser */
+const sleep = (milliseconds) => {
+  return new Promise(resolve => setTimeout(resolve, milliseconds))
+}
+
 (function() {
 
 window.WS = new WebSocket('ws://' + window.location.host + '/websocket') // could use wss://
@@ -6,12 +10,24 @@ window.WS = new WebSocket('ws://' + window.location.host + '/websocket') // coul
 window.WS.onerror = function(event) {
   console.log("received error, attempting reconnect to server")
 
-  // if (window.WS.readyState > 1) {
-  //   console.log("window either connected or connecting, skipping reconnect")
-  //   return
-  // }
+  console.log(event)
 
-  window.WS = new WebSocket('ws://' + window.location.host + '/websocket') // could use wss://
+  console.log("ready state: ", event.srcElement.readyState)
+  // in case of connecting or open
+  if (event.srcElement.readyState === 0) {
+    console.log("window either connected, skipping onerror reconnect")
+    event.preventDefault()
+    return
+  }
+
+  // in case of closing wait for closure
+  while (event.srcElement.readyState === 1 || event.srcElement.readyState === 2) {
+    console.log("waiting for closing status to change, onerror")
+    // await sleep(5000)
+  }
+  sleep(5000)
+
+  // window.WS = new WebSocket('ws://' + window.location.host + '/websocket') // could use wss://
 }
 
 // @todo error should have priority over close,
@@ -19,12 +35,24 @@ window.WS.onerror = function(event) {
 window.WS.onclose = function(event) {
   console.log("received close, attempting reconnect to server")
 
-  // if (window.WS.readyState > 1) {
-  //   console.log("window either connected or connecting, skipping reconnect")
-  //   return
-  // }
+  console.log(event)
 
-  // window.WS = new WebSocket('ws://' + window.location.host + '/websocket') // could use wss://
+  console.log("ready state: ", event.srcElement.readyState)
+  // in case of connecting or open
+  if (event.srcElement.readyState === 0) {
+    console.log("window either connected, skipping onclose reconnect")
+    event.preventDefault()
+    return
+  }
+
+  // in case of closing wait for closure
+  while (event.srcElement.readyState === 1 || event.srcElement.readyState === 2) {
+    console.log("waiting for closing status to change, onclose")
+  }
+
+  sleep(5000)
+
+  window.WS = new WebSocket('ws://' + window.location.host + '/websocket') // could use wss://
 }
 
 window.startSession = function() {

@@ -1,0 +1,42 @@
+# github.com/alecthomas/template v0.0.0-20190718012654-fb15b899a751
+github.com/alecthomas/template
+github.com/alecthomas/template/parse
+# github.com/alecthomas/units v0.0.0-20190717042225-c3de453c63f4
+github.com/alecthomas/units
+# github.com/google/uuid v1.1.2
+## explicit
+github.com/google/uuid
+# github.com/gorilla/websocket v1.4.2
+## explicit
+github.com/gorilla/websocket
+# github.com/klauspost/compress v1.10.3
+github.com/klauspost/compress/flate
+# github.com/konsorten/go-windows-terminal-sequences v1.0.3
+github.com/konsorten/go-windows-terminal-sequences
+# github.com/pkg/errors v0.9.1
+## explicit
+github.com/pkg/errors
+# github.com/prometheus/common v0.10.0
+## explicit
+github.com/prometheus/common/log
+# github.com/sirupsen/logrus v1.6.0
+## explicit
+github.com/sirupsen/logrus
+# github.com/stretchr/testify v1.5.1
+## explicit
+# golang.org/x/sys v0.0.0-20200501145240-bc7a7d42d5c3
+## explicit
+golang.org/x/sys/internal/unsafeheader
+golang.org/x/sys/unix
+golang.org/x/sys/windows
+golang.org/x/sys/windows/registry
+golang.org/x/sys/windows/svc/eventlog
+# gopkg.in/alecthomas/kingpin.v2 v2.2.6
+gopkg.in/alecthomas/kingpin.v2
+# nhooyr.io/websocket v1.8.6
+## explicit
+nhooyr.io/websocket
+nhooyr.io/websocket/internal/bpool
+nhooyr.io/websocket/internal/errd
+nhooyr.io/websocket/internal/wsjs
+nhooyr.io/websocket/internal/xsync

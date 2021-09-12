@@ -3,7 +3,7 @@ TARGETS: test
 
 TESTBASE=go test videocaller --parallel=1 -v
 
-startserver: 
+run: 
 	go run cmd/main.go --port=:3000
 
 test: 

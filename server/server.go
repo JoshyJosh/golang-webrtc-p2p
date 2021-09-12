@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"nhooyr.io/websocket"
 )
@@ -23,7 +24,6 @@ const (
 )
 
 var callerReady chan bool
-var callerDisconnect chan bool
 
 // session description exchange channels
 var calleeSessionDescriptionChan chan []byte
@@ -84,24 +84,24 @@ func (w *wsPayload) isValidIncomingType() (isValid bool) {
 
 // WSConn is used to serialize WSConn, and help storing sessionDescriptions
 type WSConn struct {
-	ID        uuid.UUID
-	conn      *websocket.Conn
-	isCaller  bool
-	reconnect bool
-	logger    *logrus.Entry
+	ID            uuid.UUID
+	conn          *websocket.Conn
+	isCaller      bool
+	reconnect     bool
+	reconnectChan chan struct{}
+	logger        *logrus.Entry
 	sync.RWMutex
 }
 
 type wsConnRoster struct {
-	wsConnMap map[uuid.UUID]*chan struct{}
+	wsConnMap map[uuid.UUID]chan struct{}
 	sync.RWMutex
 }
 
-var wsConnR = wsConnRoster{}
+var WSConnRoster = wsConnRoster{}
 
 func init() {
 	callerReady = make(chan bool, 1)
-	callerDisconnect = make(chan bool, 1)
 
 	// peer session description exchange
 	calleeSessionDescriptionChan = make(chan []byte, 10)
@@ -115,30 +115,37 @@ func init() {
 	chatroomStats.callerStatus = unsetPeerStatus
 	chatroomStats.calleeStatus = unsetPeerStatus
 
-	wsConnR.wsConnMap = make(map[uuid.UUID]*chan struct{})
+	// @todo utilize roster to communicate between peers that have not established ICE connections
+	WSConnRoster.wsConnMap = make(map[uuid.UUID]chan struct{})
 }
 
 func StartServer(addr string) (err error) {
 
 	http.HandleFunc("/", indexPageHandler)
+	http.HandleFunc("/assets/", assetsHandler)
 	http.HandleFunc("/websocket", websocketHandler)
 
 	return http.ListenAndServe(addr, nil)
 }
 
 func indexPageHandler(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/" {
-		logrus.Info("User entered index page")
-		temp := template.Must(template.ParseFiles("templates/template.html"))
-		data := struct{ Title string }{Title: "Client to client call"}
-		err := temp.Execute(w, data)
-		if err != nil {
-			logrus.Error(err)
-			return
-		}
-	} else {
-		http.FileServer(http.Dir("templates")).ServeHTTP(w, r)
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
 	}
+
+	logrus.Info("User entered index page")
+	temp := template.Must(template.ParseFiles("templates/template.html"))
+	data := struct{ Title string }{Title: "Client to client call"}
+	err := temp.Execute(w, data)
+	if err != nil {
+		logrus.Error(err)
+		return
+	}
+}
+
+func assetsHandler(w http.ResponseWriter, r *http.Request) {
+	http.FileServer(http.Dir("templates")).ServeHTTP(w, r)
 }
 
 func websocketHandler(w http.ResponseWriter, req *http.Request) {
@@ -148,7 +155,7 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 	chatroomStats.RLock()
 	if chatroomStats.wsCount >= maxConn {
 		chatroomStats.RUnlock()
-		logrus.Warnf("Maximum connections reached: %d", maxConn)
+		logrus.Warnf("Maximum websocket connections reached: %d", maxConn)
 		// return locked status for too many connections
 		w.WriteHeader(http.StatusLocked)
 		return
@@ -171,11 +178,19 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	reconnectChan := make(chan struct{}, 1)
+
 	curWSConn := WSConn{
-		ID:        newUUID,
-		conn:      conn,
-		reconnect: true,
+		ID:            newUUID,
+		conn:          conn,
+		reconnect:     true,
+		reconnectChan: reconnectChan,
 	}
+
+	logrus.Info("setting uuid: ", newUUID)
+	WSConnRoster.Lock()
+	WSConnRoster.wsConnMap[newUUID] = reconnectChan
+	WSConnRoster.Unlock()
 	// defer close(curWSConn.pingStop)
 
 	wsLogger := logrus.WithFields(logrus.Fields{"isCaller": curWSConn.isCaller, "uuid": curWSConn.ID})
@@ -193,10 +208,22 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 		wsLogger.Warnf("New connection count %d", chatroomStats.wsCount)
 		if curWSConn.isCaller {
 			wsLogger.Debug("Unsetting caller status")
+			curWSConn.Lock()
+			curWSConn.isCaller = false
+			curWSConn.Unlock()
 
 			if chatroomStats.wsCount > 0 {
-				callerDisconnect <- true
+				WSConnRoster.Lock()
+				for uuid, reconnectChan := range WSConnRoster.wsConnMap {
+					if uuid.String() != curWSConn.ID.String() {
+						logrus.Debug("sending reconnect to channel")
+						reconnectChan <- struct{}{}
+					}
+				}
+				WSConnRoster.Unlock()
 			}
+
+			wsLogger.Debug("unset caller status")
 		}
 
 		chatroomStats.Unlock()
@@ -217,7 +244,7 @@ func websocketHandler(w http.ResponseWriter, req *http.Request) {
 func (curWSConn *WSConn) startChannel(ctx context.Context, log *logrus.Entry) {
 	ctx2, cancel := context.WithCancel(ctx)
 
-	chatroomStats.RLock()
+	chatroomStats.Lock()
 	logrus.Debugf("Called startChannel %s %d", chatroomStats.callerStatus, chatroomStats.wsCount)
 
 	if chatroomStats.wsCount == 1 && chatroomStats.callerStatus == unsetPeerStatus {
@@ -229,26 +256,28 @@ func (curWSConn *WSConn) startChannel(ctx context.Context, log *logrus.Entry) {
 
 	curWSConn.RLock()
 	// update isCallerField
-	log = logrus.WithFields(logrus.Fields{"isCaller": curWSConn.isCaller})
+	// @todo make this implicit
+	log.Data["isCaller"] = curWSConn.isCaller
 	curWSConn.RUnlock()
-	chatroomStats.RUnlock()
+	chatroomStats.Unlock()
 
 	var wg sync.WaitGroup
 
-	readBuffer := make(chan wsMessage, 10)
+	readBuffer := make(chan wsMessage)
 	writeBuffer := make(chan wsMessage, 10)
+
 	// for exiting handler
 	closedConn := make(chan struct{}, 1)
 	closedWConn := make(chan struct{}, 1)
-	closedInit := make(chan struct{}, 1)
-	closedICE := make(chan struct{}, 1)
+	// closedInit := make(chan struct{}, 1)
+	// closedICE := make(chan struct{}, 1)
+
 	gatheringComplete := make(chan struct{}, 1)
 
 	startSession := make(chan struct{}, 1)
 	pingStop := make(chan struct{}, 1)
 
 	// channel closure manager
-
 	go func() {
 		defer func() {
 			log.Warn("deferring startChannel cancel")
@@ -256,20 +285,25 @@ func (curWSConn *WSConn) startChannel(ctx context.Context, log *logrus.Entry) {
 		}()
 
 		select {
-		case <-pingStop:
+		case <-curWSConn.reconnectChan:
+			log.Debug("setting reconnect to callee by caller")
+			curWSConn.reconnect = true
+			// curWSConn.skipReconnectTimeout = true
 		case <-closedConn:
+		case <-pingStop:
 		case <-closedWConn:
-		case <-closedInit:
-		case <-closedICE:
-		case <-ctx.Done():
-		case <-ctx2.Done():
-		case <-callerDisconnect:
+			// case <-closedInit:
+			// case <-closedICE:
+			// case <-ctx.Done():
+			// case <-ctx2.Done():
+			// case <-callerDisconnect:
 		}
 
 		// empty ICE nad SessionDescription channels
 		log.Info("Emptying ICE and SessionDescription channels")
 		curWSConn.RLock()
 		if curWSConn.isCaller {
+			// empty ICE candidates channel before unsetting caller
 			for len(iceCandidatesCaller) > 0 {
 				<-iceCandidatesCaller
 			}
@@ -294,10 +328,12 @@ func (curWSConn *WSConn) startChannel(ctx context.Context, log *logrus.Entry) {
 			log.Infof("Emptied ICE and SessionDescription channels: %d, %d", len(iceCandidatesCallee), len(calleeSessionDescriptionChan))
 		}
 
+		// empty callee ICE candidates channel for this session
 		for len(iceCandidatesCallee) > 0 {
 			<-iceCandidatesCallee
 		}
 
+		// empty caller ICE candidates channel for this session
 		for len(calleeSessionDescriptionChan) > 0 {
 			<-calleeSessionDescriptionChan
 		}
@@ -306,38 +342,40 @@ func (curWSConn *WSConn) startChannel(ctx context.Context, log *logrus.Entry) {
 	}()
 
 	wg.Add(1)
-	go curWSConn.writeLoop(ctx2, writeBuffer, closedWConn, log, &wg)
-	wg.Add(1)
 	go curWSConn.readLoop(ctx2, readBuffer, closedConn, startSession, gatheringComplete, log, &wg)
-
 	wg.Add(1)
-	go curWSConn.pingLoop(ctx2, pingStop, log, &wg)
+	go curWSConn.writeLoop(ctx2, writeBuffer, closedWConn, log, &wg)
 
-	go func(ctx2 context.Context) {
-		select {
-		case <-startSession:
-			var wg2 sync.WaitGroup
-			// @TODO set up timeout context and second peer availability
-			// during handshake ws channel becomes unresponsive
-			// if handshake fails, reconnect websocket
-			// <-startSession
-			log.Warn("Starting session in handler")
-			if curWSConn.isCaller {
-				wg2.Add(1)
-				go curWSConn.calleeICEBuffer(ctx2, writeBuffer, closedICE, log, &wg2)
-				wg2.Add(1)
-				go curWSConn.initCaller(ctx2, writeBuffer, closedInit, log, &wg2)
-			} else {
-				wg2.Add(1)
-				go curWSConn.callerICEBuffer(ctx2, writeBuffer, closedICE, log, &wg2)
-				wg2.Add(1)
-				go curWSConn.initCallee(ctx2, writeBuffer, closedInit, log, &wg2)
-			}
-			wg2.Wait()
-		case <-ctx2.Done():
-			break
-		}
-	}(ctx2)
+	// @todo ping loop has issues with reconnects (frames get written, although the connection is not fully established)
+	// consider if this is needed after a WebRTC connection has been established
+	// wg.Add(1)
+	// go curWSConn.pingLoop(ctx2, pingStop, log, &wg)
+
+	// go func(ctx2 context.Context) {
+	// 	select {
+	// 	case <-startSession:
+	// 		var wg2 sync.WaitGroup
+	// 		// @TODO set up timeout context and second peer availability
+	// 		// during handshake ws channel becomes unresponsive
+	// 		// if handshake fails, reconnect websocket
+	// 		// <-startSession
+	// 		log.Warn("Starting session in handler")
+	// 		if curWSConn.isCaller {
+	// 			wg2.Add(1)
+	// 			go curWSConn.calleeICEBuffer(ctx2, writeBuffer, closedICE, log, &wg2)
+	// 			wg2.Add(1)
+	// 			go curWSConn.initCaller(ctx2, writeBuffer, closedInit, log, &wg2)
+	// 		} else {
+	// 			wg2.Add(1)
+	// 			go curWSConn.callerICEBuffer(ctx2, writeBuffer, closedICE, log, &wg2)
+	// 			wg2.Add(1)
+	// 			go curWSConn.initCallee(ctx2, writeBuffer, closedInit, log, &wg2)
+	// 		}
+	// 		wg2.Wait()
+	// 	case <-ctx2.Done():
+	// 		break
+	// 	}
+	// }(ctx2)
 
 	wg.Wait()
 
@@ -351,20 +389,16 @@ func (curWSConn *WSConn) pingLoop(ctx context.Context, closedConn chan struct{},
 	}()
 
 	for {
-		select {
-		case <-ctx.Done():
-			log.Info("Client disconnected in writeLoop")
+
+		log.Info("Pinging")
+		time.Sleep(pingPeriod)
+
+		if err := curWSConn.conn.Ping(ctx); err != nil {
+			// @todo check if websocket has disconnected
+			log.Error(errors.Wrap(err, "did not receive pong"))
+			// @todo consider if a corner case justified the pingLoop having a closed conn call
+			// closedConn <- struct{}{}
 			return
-		default:
-			log.Info("Pinging")
-			time.Sleep(pingPeriod)
-			ctxTimeout, cancelTimeout := context.WithTimeout(ctx, 5*time.Second)
-			defer cancelTimeout()
-			if err := curWSConn.conn.Ping(ctxTimeout); err != nil {
-				log.Error(err)
-				closedConn <- struct{}{}
-				return
-			}
 		}
 	}
 }
@@ -382,14 +416,12 @@ readLoop:
 	for {
 		msgType, msg, err := wsConn.conn.Read(ctx)
 		if err != nil {
-			wsConn.RLock()
 			log.Error("Error in receive message: ", err, wsConn.reconnect)
-			wsConn.RUnlock()
 			break
 		}
 
 		if msgType != websocket.MessageText {
-			log.Errorf("Unknown gorilla websocket message type: %d", msgType)
+			log.Errorf("Unknown websocket message type: %d", msgType)
 			return
 		}
 
