@@ -341,9 +341,8 @@ func (curWSConn *WSConn) startChannel(ctx context.Context, log *logrus.Entry) {
 		curWSConn.RUnlock()
 	}()
 
-	wg.Add(1)
+	wg.Add(2)
 	go curWSConn.readLoop(ctx2, readBuffer, closedConn, startSession, gatheringComplete, log, &wg)
-	wg.Add(1)
 	go curWSConn.writeLoop(ctx2, writeBuffer, closedWConn, log, &wg)
 
 	// @todo ping loop has issues with reconnects (frames get written, although the connection is not fully established)
@@ -382,23 +381,26 @@ func (curWSConn *WSConn) startChannel(ctx context.Context, log *logrus.Entry) {
 	log.Info("Exiting handler")
 }
 
-func (curWSConn *WSConn) pingLoop(ctx context.Context, closedConn chan struct{}, log *logrus.Entry, wg *sync.WaitGroup) {
+func (curWSConn *WSConn) pingLoop(ctx context.Context, pingStop chan struct{}, log *logrus.Entry) {
 	defer func() {
 		log.Debug("In wg defer in pingLoop")
-		wg.Done()
+		pingStop <- struct{}{}
 	}()
 
+	ticker := time.NewTicker(pingPeriod)
+	defer ticker.Stop()
+
 	for {
-
-		log.Info("Pinging")
-		time.Sleep(pingPeriod)
-
-		if err := curWSConn.conn.Ping(ctx); err != nil {
-			// @todo check if websocket has disconnected
-			log.Error(errors.Wrap(err, "did not receive pong"))
-			// @todo consider if a corner case justified the pingLoop having a closed conn call
-			// closedConn <- struct{}{}
+		select {
+		case <-ctx.Done():
+			log.Debug("context cancelled in ping loop")
 			return
+		case <-ticker.C:
+			log.Info("Pinging")
+			if err := curWSConn.conn.Ping(ctx); err != nil {
+				log.Error(errors.Wrap(err, "did not receive pong"))
+				return
+			}
 		}
 	}
 }
@@ -411,6 +413,9 @@ func (wsConn *WSConn) readLoop(ctx context.Context, messageBuffer chan<- wsMessa
 	}()
 
 	log.Debug("In readLoop")
+
+	pingStop := make(chan struct{}, 1)
+	go wsConn.pingLoop(ctx, pingStop, log)
 
 readLoop:
 	for {
@@ -493,6 +498,7 @@ readLoop:
 	log.Debug("Exiting readloop...")
 
 	closedConn <- struct{}{}
+	<-pingStop
 
 	<-ctx.Done()
 }
