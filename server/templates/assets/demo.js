@@ -1,11 +1,10 @@
 /* eslint-env browser */
-const sleep = (milliseconds) => {
-  return new Promise(resolve => setTimeout(resolve, milliseconds))
-}
 
 (function() {
 
 window.WS = new WebSocket('ws://' + window.location.host + '/websocket') // could use wss://
+window.HealthcheckWS = null;
+window.uuid = null;
 
 window.WS.onerror = function(event) {
   console.log("received error, attempting reconnect to server")
@@ -23,11 +22,10 @@ window.WS.onerror = function(event) {
   // in case of closing wait for closure
   while (event.srcElement.readyState === 1 || event.srcElement.readyState === 2) {
     console.log("waiting for closing status to change, onerror")
-    // await sleep(5000)
   }
-  sleep(5000)
 
-  // window.WS = new WebSocket('ws://' + window.location.host + '/websocket') // could use wss://
+  console.log("reconnecting websocket")
+  window.WS = new WebSocket('ws://' + window.location.host + '/websocket') // could use wss://
 }
 
 // @todo error should have priority over close,
@@ -50,46 +48,48 @@ window.WS.onclose = function(event) {
     console.log("waiting for closing status to change, onclose")
   }
 
-  sleep(5000)
-
+  console.log("reconnecting websocket")
   window.WS = new WebSocket('ws://' + window.location.host + '/websocket') // could use wss://
 }
 
-window.startSession = function() {
-  window.WS.onmessage = function(event) {
-    // @todo decode and add message to remote description
-    console.log(event)
-    var data = JSON.parse(event.data)
-    console.log(event.data)
-    switch (data.type) {
-      case "InitCaller":
-        window.initCaller()
-        break 
-      case "CallerSessionDesc":
-        document.getElementById('remoteSessionDescription').value = data.data
-        window.initCallee()
-        break
-      case "CalleeSessionDesc":
-        console.log("received ReceiverSessionDesc")
-        remoteSDP = JSON.parse(atob(data.data))
-        window.pc.setRemoteDescription(remoteSDP)
-        // @todo set function to recieve remote session description and initialize call
-        break
-      case "ICECandidate":
-        console.log("Getting ice candidate")
-        var candidateMessage = JSON.parse(atob(data.data))
-        window.incomingICEcandidate(candidateMessage)
-        break
-      case "UpgradeToCaller":
-        console.log("Upgrating to Caller")
-        WS.send(JSON.stringify({type:"UpgradeToCaller", data:sessionDesc}))
-        break
-      default:
-        alert("invalid session description type: ", data.type)
-    }
-    console.log("At the end")
+window.WS.onmessage = function(event) {
+  var data = JSON.parse(event.data)
+  console.log(event)
+  switch (data.type) {
+    case "InitCaller":
+      console.log("initializing caller")
+      window.initCaller()
+      break 
+    case "CallerSessionDesc":
+      document.getElementById('remoteSessionDescription').value = data.data
+      console.log("initializing callee")
+      window.initCallee()
+      break
+    case "CalleeSessionDesc":
+      console.log("received ReceiverSessionDesc")
+      remoteSDP = JSON.parse(atob(data.data))
+      window.pc.setRemoteDescription(remoteSDP)
+      // @todo set function to recieve remote session description and initialize call
+      break
+    case "ICECandidate":
+      console.log("Getting ice candidate")
+      var candidateMessage = JSON.parse(atob(data.data))
+      window.incomingICEcandidate(candidateMessage)
+      break
+    case "UpgradeToCaller":
+      console.log("Upgrating to Caller")
+      WS.send(JSON.stringify({type:"UpgradeToCaller", data:sessionDesc}))
+      break
+    case "UUIDExchange":
+      console.log("Recieved UUID")
+      window.uuid = data.data
+      break
+    default:
+      console.log("invalid session description type: ", data.type)
   }
+}
 
+window.startSession = function() {
   window.WS.send(JSON.stringify({type:"StartSession"}))
 }
 
@@ -131,7 +131,7 @@ function closeVideoCall() {
   window.WS.send(JSON.stringify({type:"ConnectionClosed"}))
 }
 
-window.pc.oniceconnectionstatechange = e => {
+window.pc.oniceconnectionstatechange = event => {
   log(pc.iceConnectionState)
 
   switch(pc.iceConnectionState) {
@@ -150,7 +150,7 @@ window.pc.oniceconnectionstatechange = e => {
   }
 }
 
-window.pc.onsignalingstatechange = e => {
+window.pc.onsignalingstatechange = event => {
   switch(pc.signalingState) {
     case "closed":
       closeVideoCall()
@@ -171,6 +171,18 @@ window.pc.onicecandidate = (event) => {
 
 window.pc.onicegatheringstatechange = (event) => {
   let connection = event.target;
+
+  // @todo make new endpoint to be a pinging handler for ice and stun negotiation phase
+  console.log("connecting to healthcheck")
+
+  // @todo dunno why this triggers twice under "normal" circumstances
+  if (window.HealthcheckWS == null) { 
+    window.HealthcheckWS = new WebSocket('ws://' + window.location.host + '/healthcheck')
+
+    window.HealthcheckWS.onopen = function(event) {
+      window.HealthcheckWS.send(JSON.stringify({type:"UUIDExchange", data: window.uuid}))
+    }
+  }
 
   switch(connection.iceGatheringState) {
     case "gathering":
